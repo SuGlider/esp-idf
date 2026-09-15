@@ -8,7 +8,8 @@ permissions:
 on:
 #  schedule:
 #    - cron: "0 * * * *"
-
+  workflow_dispatch:
+  
 # Limit to single concurrent run for workflows which can create Jira issues.
 # Same concurrency group is used in issue_comment.yml
 concurrency: jira_issues
