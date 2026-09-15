@@ -22,7 +22,7 @@ The BLE Log module is an efficient logging system specifically designed for the 
 ### Main Components
 
 - **BLE Log Core** (`ble_log.c`): Module core responsible for initialization and coordination of sub-modules
-- **Runtime Manager** (`ble_log_rt.c`): Runtime task management for log transmission scheduling
+- **Runtime Manager** (`ble_log_rt.c`): One-shot ESP Timer dispatch for log transmission scheduling
 - **Log Buffer Manager** (`ble_log_lbm.c`): Log buffer management supporting multiple locking mechanisms
 - **Peripheral Interface** (`ble_log_prph_*.c`): Peripheral interface abstraction layer supporting various transmission methods
 - **Timestamp Sync** (`ble_log_ts.c`): Timestamp synchronization module
@@ -34,7 +34,7 @@ The BLE Log module is an efficient logging system specifically designed for the 
 
 - **Multi-source Log Collection**: Supports multiple log sources including Link Layer, Host, HCI, UART redirection, etc.
 - **High Concurrency Processing**: Uses atomic and spin lock mechanisms for multi-task concurrent writing
-- **Real-time Transmission**: Asynchronous transmission mechanism based on FreeRTOS tasks
+- **Real-time Transmission**: Asynchronous transmission through ESP Timer task dispatch
 - **Data Integrity**: Checksum mechanism ensures data integrity (always enabled)
 - **Multi-buffer Transport**: Each LBM manages multiple transport buffers (default 4) for improved throughput over the legacy ping-pong design
 - **Cross-pool Buffer Fallback**: LBM acquire attempts all atomic LBMs before falling back to spinlock LBMs, improving buffer availability under contention
@@ -80,7 +80,7 @@ void app_main() {
     uint8_t data[] = {0x01, 0x02, 0x03, 0x04};
     ble_log_write_hex(BLE_LOG_SRC_CUSTOM, data, sizeof(data));
     
-    // Force flush buffers
+    // End session and flush buffers
     ble_log_flush();
     
     // Cleanup resources
@@ -162,6 +162,9 @@ Cleanup the BLE Log module and release all resources.
 **Note**: 
 - All pending logs will be lost after calling this function
 - Peripheral interface will be cleaned up first to avoid DMA transmission issues during memory release
+- This function may run concurrently with BLE Log write APIs. New writes are
+  rejected after shutdown begins, and deinit waits for in-progress writers
+  before releasing their buffers.
 
 #### `bool ble_log_write_hex(ble_log_src_t src_code, const uint8_t *addr, size_t len)`
 
@@ -178,9 +181,17 @@ Write hexadecimal log data.
 
 #### `void ble_log_flush(void)`
 
-Force flush all buffers and send pending logs immediately.
+End the current logging session and flush pending logs immediately.
 
-**Note**: This operation is blocking and will pause module operation until all buffers are cleared.
+This API temporarily suspends ordinary log writes, waits for in-progress
+writers to exit, emits a final statistics internal frame, flushes pending
+transport buffers, resets statistics, and then restores the enable state that
+was in effect before the call.
+
+**Note**: This operation is blocking and must run in an ordinary caller-owned
+FreeRTOS task. Do not call it from an ISR or a system callback such as an ESP
+Timer callback. If BLE Log was enabled before the call, it remains enabled
+after the flush completes.
 
 #### `void ble_log_dump_to_console(void)`
 
@@ -272,7 +283,7 @@ void example_basic_logging() {
     uint8_t host_data[] = {0x02, 0x00, 0x20, 0x0B, 0x00, 0x07, 0x00, 0x04, 0x00, 0x10, 0x01, 0x00, 0xFF, 0xFF, 0x00, 0x28};
     ble_log_write_hex(BLE_LOG_SRC_HOST, host_data, sizeof(host_data));
     
-    // Force send
+    // End session and flush buffers
     ble_log_flush();
     
     // Cleanup
@@ -334,6 +345,7 @@ void example_performance_test() {
         ble_log_write_hex(BLE_LOG_SRC_CUSTOM, test_data, sizeof(test_data));
     }
     
+    // End session and flush buffers
     ble_log_flush();
     uint32_t end_time = esp_timer_get_time();
     
@@ -440,9 +452,6 @@ if (!initialized) {
 
 // Increase baud rate (default is now 3000000)
 // CONFIG_BLE_LOG_PRPH_UART_DMA_BAUD_RATE=3000000
-
-// Adjust task priority
-#define BLE_LOG_TASK_PRIO configMAX_PRIORITIES-3
 ```
 
 ### Debugging Techniques

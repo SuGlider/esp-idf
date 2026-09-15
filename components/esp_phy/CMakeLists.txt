@@ -14,7 +14,7 @@ set(embed_files)
 
 if(CONFIG_ESP_PHY_ENABLED)
 
-    set(srcs "src/phy_override.c" "src/lib_printf.c" "src/phy_common.c")
+    set(srcs "src/phy_override.c" "src/lib_printf.c" "src/phy_common.c" "src/phy_debug.c")
 
     if(CONFIG_APP_NO_BLOBS)
         set(link_binary_libs 0)
@@ -92,7 +92,6 @@ if(CONFIG_ESP_PHY_ENABLED)
         # Decide which libraries to link based on the configuration and the target
         set(has_libbttestmode 0)
         set(has_librftest 0)
-        set(has_librfate 0)
         set(has_libphy 0)
         set(has_libbtbb 0)
         set(has_librtc 0)
@@ -103,11 +102,9 @@ if(CONFIG_ESP_PHY_ENABLED)
                 set(has_librftest 1)
             elseif(CONFIG_IDF_TARGET_ESP32S2)
                 set(has_librftest 1)
-                set(has_librfate 1)
             else()
                 set(has_libbttestmode 1)
                 set(has_librftest 1)
-                set(has_librfate 1)
             endif()
         endif()
 
@@ -132,12 +129,6 @@ if(CONFIG_ESP_PHY_ENABLED)
             add_prebuilt_library(esp_phy_librftest "${lib_dir}/librftest.a"
                                 REQUIRES ${COMPONENT_NAME})
             list(APPEND libs_to_link esp_phy_librftest)
-        endif()
-
-        if(has_librfate)
-            add_prebuilt_library(esp_phy_librfate "${lib_dir}/librfate.a"
-                                REQUIRES ${COMPONENT_NAME})
-            list(APPEND libs_to_link esp_phy_librfate)
         endif()
 
         if(has_libbtbb)

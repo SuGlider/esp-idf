@@ -243,6 +243,8 @@ typedef struct {
     tBTA_GATT_CONN_PARAMS   conn_params;
     UINT8                   ble_addr_type;
     UINT16                  conn_handle;
+    UINT8                   adv_handle;
+    UINT16                  sync_handle;
 } tBTA_GATTC_INT_CONN;
 
 typedef struct {
@@ -498,7 +500,8 @@ extern void bta_gattc_cancel_bk_conn(tBTA_GATTC_API_CANCEL_OPEN *p_data);
 extern void bta_gattc_send_open_cback( tBTA_GATTC_RCB *p_clreg, tBTA_GATT_STATUS status,
                                        BD_ADDR remote_bda, UINT16 conn_id, tBTA_TRANSPORT transport,  UINT16 mtu);
 extern void bta_gattc_send_connect_cback( tBTA_GATTC_RCB *p_clreg, BD_ADDR remote_bda, UINT16 conn_id,
-                                tBTA_GATT_CONN_PARAMS conn_params, UINT8 link_role, UINT8 ble_addr_type, UINT16 conn_handle);
+                                tBTA_GATT_CONN_PARAMS conn_params, UINT8 link_role, UINT8 ble_addr_type,
+                                UINT16 conn_handle, UINT8 adv_handle, UINT16 sync_handle);
 extern void bta_gattc_send_disconnect_cback( tBTA_GATTC_RCB *p_clreg, tGATT_DISCONN_REASON reason,
                                 BD_ADDR remote_bda, UINT16 conn_id);
 extern void bta_gattc_process_api_refresh(tBTA_GATTC_CB *p_cb, tBTA_GATTC_DATA *p_msg);
@@ -523,6 +526,7 @@ extern BOOLEAN bta_gattc_enqueue(tBTA_GATTC_CLCB *p_clcb, tBTA_GATTC_DATA *p_dat
 
 extern BOOLEAN bta_gattc_uuid_compare (const tBT_UUID *p_src, const tBT_UUID *p_tar, BOOLEAN is_precise);
 extern BOOLEAN bta_gattc_check_notif_registry(tBTA_GATTC_RCB  *p_clreg, tBTA_GATTC_SERV *p_srcb, tBTA_GATTC_NOTIFY  *p_notify);
+extern BOOLEAN bta_gattc_any_notif_registry(tBTA_GATTC_SERV *p_srcb, tBTA_GATTC_NOTIFY *p_notify);
 extern BOOLEAN bta_gattc_mark_bg_conn (tBTA_GATTC_IF client_if,  BD_ADDR_PTR remote_bda, BOOLEAN add, BOOLEAN is_listen);
 extern BOOLEAN bta_gattc_check_bg_conn (tBTA_GATTC_IF client_if,  BD_ADDR remote_bda, UINT8 role);
 extern UINT8 bta_gattc_num_reg_app(void);

@@ -1,4 +1,4 @@
-# BLE UART Bridge Demo - OpenCode Integration
+# ESP-BLE-UART Bridge Demo - OpenCode Integration
 
 This demo sketches how to bridge OpenCode events to a BLE device through
 `tools/ble/ble_uart_bridge`.
@@ -12,13 +12,17 @@ device decisions, and daemon-side protocol handling for their own products.
 
 - [Goal](#goal)
 - [Quick Start](#quick-start)
-- [How it relates to BLE UART Bridge](#how-it-relates-to-ble-uart-bridge)
+- [How it relates to ESP-BLE-UART Bridge](#how-it-relates-to-esp-ble-uart-bridge)
   - [Daemon JSONL protocol summary](#daemon-jsonl-protocol-summary)
 - [Files](#files)
 - [Demo and customization notes](#demo-and-customization-notes)
 - [Environment variables](#environment-variables)
 - [Current assumptions](#current-assumptions)
 - [Message routing](#message-routing)
+- [Indicator device support (vibe_indicator)](#indicator-device-support-vibe_indicator)
+  - [Device-type detection](#device-type-detection)
+  - [Lamp effects](#lamp-effects)
+  - [Binding a channel (multiple instances, one device)](#binding-a-channel-multiple-instances-one-device)
 - [Firmware protocol reference](#firmware-protocol-reference)
   - [Plugin message: session status](#plugin-message-session-status)
   - [Plugin message: permission cancel](#plugin-message-permission-cancel)
@@ -40,7 +44,7 @@ Use an OpenCode plugin to:
 flowchart LR
     OC[OpenCode] -->|session.status| Plugin[OpenCode BLE plugin]
     OC -->|permission.asked| Plugin
-    Plugin -->|POST /notify| Daemon[ble_uart_bridge daemon]
+    Plugin -->|POST /notify| Daemon[ESP-BLE-UART Daemon]
     Plugin -->|POST /request| Daemon
     Daemon -->|BLE UART JSONL| Device[BLE device UI]
     Device -->|once / reject| Daemon
@@ -52,10 +56,13 @@ flowchart LR
 
 1. Prepare a BLE device firmware example.
 
-   The intended firmware companion is an `esp-vocat` example for the MiaoBan
-   (喵伴) device, planned for the `esp-iot-solution` repository. Until that
-   example is available, use any device that implements the default BLE UART-over-GATT UUIDs and
-   the JSONL request/response envelope described in
+   The intended firmware companion is the `esp-vocat` example for the MiaoBan
+   (喵伴) device, available in the
+   [esp-iot-solution](https://github.com/espressif/esp-iot-solution) repository
+   at `examples/bluetooth/ble_uart_service`. See the example README for
+   supported boards, dependency versions, and build instructions. Alternatively,
+   use any device that implements the default BLE UART-over-GATT UUIDs and the
+   JSONL request/response envelope described in
    [Firmware protocol reference](#firmware-protocol-reference).
 
 2. Install the bridge dependencies:
@@ -64,7 +71,7 @@ flowchart LR
    python -m pip install -r tools/ble/ble_uart_bridge/requirements.txt
    ```
 
-3. Start the BLE UART daemon:
+3. Start the ESP-BLE-UART Daemon:
 
    ```bash
    python tools/ble/ble_uart_bridge/main.py list-devices
@@ -95,6 +102,12 @@ flowchart LR
    mkdir -p ~/.config/opencode/plugins/opencode-ble-uart-bridge
    cp tools/ble/ble_uart_bridge/demos/opencode/src/*.ts ~/.config/opencode/plugins/opencode-ble-uart-bridge/
    ```
+
+   > **Note:** OpenCode's auto-loader may only scan the top-level of the plugin
+   > directory (not subdirectories). If the plugin does not load after copying
+   > the files, add an explicit entry in `opencode.json` (see step 5) pointing
+   > to the entry TypeScript file with an **absolute path** — this is the
+   > reliable method that works across all OpenCode versions.
 
 5. Merge the relevant parts of `opencode.json.example` into your `opencode.json`.
 
@@ -152,14 +165,15 @@ flowchart LR
    should receive a `permission.request` JSONL message and return `once` or
    `reject`.
 
-After the `esp-vocat` example is published in `esp-iot-solution`, this section
-should be updated with the exact example path, build/flash commands, and any
-MiaoBan-specific button or display behavior.
+The `esp-vocat` example is available in the
+[esp-iot-solution](https://github.com/espressif/esp-iot-solution) repository at
+`examples/bluetooth/ble_uart_service`. See the example README for build/flash
+commands, dependency versions, and MiaoBan-specific button and display behavior.
 
-## How it relates to BLE UART Bridge
+## How it relates to ESP-BLE-UART Bridge
 
 The OpenCode plugin does not talk to BLE directly. It sends local HTTP requests
-to the BLE UART Bridge daemon, and the daemon keeps the BLE connection open for
+to the ESP-BLE-UART Daemon, and the Daemon keeps the BLE connection open for
 the plugin:
 
 - `POST /notify` sends fire-and-forget events, such as session status updates.
@@ -170,8 +184,8 @@ the plugin:
 
 For the daemon itself, see:
 
-- [BLE UART Bridge README](../../README.md)
-- [BLE UART Daemon Quick Start](../../docs/Quick-Start-BLE-UART-Daemon.md)
+- [ESP-BLE-UART Bridge README](../../README.md)
+- [ESP-BLE-UART Daemon Quick Start](../../docs/Quick-Start-BLE-UART-Daemon.md)
 
 ### Daemon JSONL protocol summary
 
@@ -201,7 +215,9 @@ are documented below in [Firmware protocol reference](#firmware-protocol-referen
 ## Files
 
 - `src/opencode-ble-uart-bridge.ts` — OpenCode plugin entry point using `/notify` for status and `/request` for permission decisions.
-- `src/*.ts` helper modules — typed, commented demo code for payloads, BLE daemon transport, OpenCode replies, and permission queue handling.
+- `src/indicator-control.ts` — lamp mapping and control commands for the `ble_uart_vibe_indicator` sample device (see [Indicator device support](#indicator-device-support-vibe_indicator)).
+- `src/binding-store.ts` — persists the per-directory indicator channel binding so it survives an OpenCode restart.
+- `src/*.ts` helper modules — typed, commented demo code for payloads, ESP-BLE-UART Daemon transport, OpenCode replies, and permission queue handling.
 - `opencode.json.example` — example OpenCode config to load the plugin and ask for permissions.
 
 ## Demo and customization notes
@@ -224,17 +240,19 @@ permission requests can be approved once with `once` or denied with `reject`.
 
 ## Environment variables
 
-- `OPENCODE_BLE_DAEMON_URL`: BLE daemon base URL. Defaults to
+- `OPENCODE_BLE_DAEMON_URL`: ESP-BLE-UART Daemon base URL. Defaults to
   `http://127.0.0.1:8888`.
 - `OPENCODE_BLE_DECISION_TIMEOUT_SECONDS`: permission decision timeout in
   seconds. Defaults to `60`; set it to a positive number.
-- `OPENCODE_BLE_DEBUG=1`: enables verbose local plugin logs.
+- `OPENCODE_BLE_BINDING_FILE`: path to the indicator channel binding file.
+  Defaults to `~/.ble_uart_bridge/indicator-bindings.json`. See
+  [Binding a channel](#binding-a-channel-multiple-instances-one-device).
 
 ## Current assumptions
 
-- The BLE daemon endpoint is configured by `OPENCODE_BLE_DAEMON_URL`, defaulting
+- The ESP-BLE-UART Daemon endpoint is configured by `OPENCODE_BLE_DAEMON_URL`, defaulting
   to `http://127.0.0.1:8888`.
-- The BLE daemon supports both `POST /notify` and `POST /request`.
+- The ESP-BLE-UART Daemon supports both `POST /notify` and `POST /request`.
 - The BLE device implements the default BLE UART-over-GATT UUID layout.
 - The BLE device understands JSON messages described in
   [Firmware protocol reference](#firmware-protocol-reference).
@@ -247,7 +265,7 @@ permission requests can be approved once with `once` or denied with `reject`.
 - The plugin checks daemon `/status` to maintain a connected, degraded, or
   disabled BLE forwarding state. State changes are reported with OpenCode TUI
   notifications when `client.tui.showToast` is available.
-- If BLE forwarding is disabled or the BLE daemon cannot return a permission
+- If BLE forwarding is disabled or the ESP-BLE-UART Daemon cannot return a permission
   decision, the plugin replies `reject`.
 
 ## Message routing
@@ -257,9 +275,143 @@ permission requests can be approved once with `once` or denied with `reject`.
 - `permission.cancel` uses `POST /notify` because it only tells the device to clear a pending permission UI.
 - The plugin sends structured JSON objects as daemon `data`; it does not double-encode plugin payloads as JSON strings.
 
+## Indicator device support (vibe_indicator)
+
+Besides the interactive MiaoBan (喵伴) companion device, this plugin can also
+drive the display-only `ble_uart_vibe_indicator` sample (a signal-light board).
+The two devices speak different application protocols over the same BLE UART
+transport, so the plugin detects which one is connected and routes messages
+accordingly.
+
+### Device-type detection
+
+Device-type detection is an application concern, so it lives in the plugin, not
+in the generic transport daemon. The first time the plugin sees a connected
+device, it probes it via `POST /request` with the indicator capability query
+(`{"cmd":"query","type":"indicator_count"}`) and classifies the reply:
+
+- `vibe_indicator` — the device returned a well-formed `{"count": N}` with
+  `N >= 1`; this is the signal-light board and `N` is the number of lamp groups
+  (channels) it exposes.
+- `generic` — the device answered but rejected the indicator probe (daemon
+  `502`), so it is not an indicator (for example, the MiaoBan companion device).
+- `unknown` — the probe could not be completed (write failed, timed out, or the
+  daemon was unreachable). The plugin retries on a later status refresh while the
+  device stays connected.
+
+The probe runs at most once per **connection session** while the device stays
+connected (an inconclusive `unknown` result is retried on later status refreshes).
+When the device disconnects, detection state is cleared so a reconnect or a
+different device is probed again. The plugin switches behavior on the detected
+type:
+
+| OpenCode event | `vibe_indicator` | `generic` | `unknown` (probe pending) |
+|---|---|---|---|
+| `session.status` busy / retry | green blink (executing) | forwarded as `session.status` | deferred until classified |
+| `session.status` idle | green solid (success), or red solid if the session just errored | forwarded as `session.status` | deferred until classified |
+| `session.error` | red solid (error exit) | not forwarded | deferred until classified |
+| `permission.asked` | yellow solid (waiting); decision in the OpenCode TUI | full BLE round-trip (`once` / `reject`) | OpenCode TUI only (no BLE round-trip) |
+
+The indicator protocol has no way to return a decision, so the plugin never
+waits on the indicator for a permission answer — it only shows "waiting for user
+feedback" on the lamps and lets you answer in the OpenCode TUI.
+
+All indicator commands use `POST /request` (which carries a non-empty `id`); the
+`/notify` path is not used for indicators because its empty `id` is rejected by
+the firmware as `id_not_specified`.
+
+The lamp mapping (lamp colors, blink actions, and the protocol field values)
+lives in `src/indicator-control.ts` — edit it there if your board wires the
+lamps differently.
+
+### Lamp effects
+
+Each indicator channel has three lamps — red (`light_id` 0), yellow (1), and
+green (2). The firmware supports four actions per lamp: off (`light_action` 0),
+on (1), slow blink (2, ~1 Hz), and fast blink (3, ~3 Hz). The plugin always
+drives all three lamps of the bound channel together, so the previous effect is
+cleared on every update.
+
+The plugin maps OpenCode activity to four high-level states (see
+`IndicatorState` in `src/indicator-control.ts`):
+
+| State | Meaning | Red (0) | Yellow (1) | Green (2) | Triggered by |
+|---|---|---|---|---|---|
+| `executing` | running | off | off | slow blink | `session.status` = `busy` / `retry` |
+| `success` | finished without error | off | off | on | `session.status` = `idle` (no error); `indicator_bind_channel` confirm |
+| `waiting` | waiting for user feedback | off | on | off | `permission.asked` pending |
+| `error` | errored out | on | off | off | `session.error` (and the following `idle` stays red) |
+
+Notes:
+
+- `idle` alone cannot tell success from failure, so the plugin tracks
+  `session.error`: after an error the lamp stays red (`error`) through the
+  following `idle`, and only returns to green once new work starts (`busy`).
+- Each state is sent as one `control` command whose `payload` lists all three
+  lamp updates, for example `executing` (green blink) on channel 0:
+
+  ```json
+  {"v":1,"id":"<bridge-request-id>","op":"command","data":{"cmd":"control","payload":[
+    {"indicator_id":0,"light_id":0,"light_action":0},
+    {"indicator_id":0,"light_id":1,"light_action":0},
+    {"indicator_id":0,"light_id":2,"light_action":2}
+  ]}}
+  ```
+
+  `indicator_id` is the [bound channel](#binding-a-channel-multiple-instances-one-device).
+
+### Binding a channel (multiple instances, one device)
+
+When several independent OpenCode instances share one indicator device, each
+instance needs its own lamp group (channel) so their lamps do not collide. The
+plugin assigns channels automatically and exposes tools to override the choice
+(invoked by the assistant in natural language).
+
+**Automatic assignment on startup.** Once the plugin learns the device is an
+indicator and how many channels it exposes, it resolves a channel in this order:
+
+1. If this project directory already has a saved binding, it re-claims that
+   channel. If a *live* instance has meanwhile taken the channel, the binding is
+   **not** silently moved — the plugin reports the conflict and leaves this
+   instance unbound, so you can decide where it goes.
+2. Otherwise it auto-selects and claims the lowest-numbered **free** channel.
+3. If every channel is already owned by a live instance, the instance stays
+   **unbound** ("dangling"): it warns and drives no lamps until a channel frees
+   up and you bind it.
+
+While unbound, lamp updates are skipped — the instance simply does not light
+anything.
+
+**Tools (manual override):**
+
+- `indicator_bind_channel(channel)` — bind this OpenCode instance to a specific
+  channel (`0` .. `indicator_count - 1`). The chosen channel briefly lights green
+  to confirm. Trigger it with, for example, *"bind the indicator to channel 1"*.
+- `indicator_unbind_channel()` — release this instance's channel so another
+  instance can take it. This instance becomes unbound and drives no lamps until
+  you bind a channel again.
+- `indicator_show_binding()` — report the current channel (or `none` when
+  unbound) and the device's channel count.
+
+**One channel, one live owner.** A channel can be owned by only one running
+instance. Binding a channel that another *live* instance already owns fails with
+an error naming the conflicting instance — pick a free channel instead (there is
+no force-takeover). When an instance exits, its claim becomes stale and is
+reclaimed automatically: the channel is then treated as free by the next
+auto-selection or bind (ownership is tracked by process id). Rebinding to a
+different channel, or `indicator_unbind`, frees the previously held one.
+
+The binding is persisted per project directory and re-claimed automatically when
+an instance restarts, so a directory keeps the same channel across restarts.
+Bindings are stored as a small JSON map
+(`{ "<directory>": { "channel": N, "pid": P } }`) at
+`~/.ble_uart_bridge/indicator-bindings.json`; override the path with
+`OPENCODE_BLE_BINDING_FILE`. Two instances opened in the *same* directory share
+one binding (they key off the directory).
+
 ## Firmware protocol reference
 
-The BLE UART Bridge daemon wraps plugin messages into JSONL over BLE UART. For
+The ESP-BLE-UART Daemon wraps plugin messages into JSONL over BLE UART. For
 request/response RPC, `POST /request` sends a non-empty bridge request ID:
 
 ```json
@@ -408,6 +560,41 @@ and truncated before crossing BLE.
 - If JSON parsing fails, return an error response.
 - Keep displayed metadata short to avoid leaking large prompts or secrets.
 
+## Troubleshooting
+
+### Plugin has no effect after configuration
+
+If OpenCode does not forward events to the ESP-BLE-UART Daemon after you
+followed the Quick Start steps:
+
+1. **Check the plugin is actually loaded.** OpenCode loads local plugins from
+   `~/.config/opencode/plugins/` and `.opencode/plugins/`. Some versions only
+   scan the top-level directory for `.ts` files, so placing files in a
+   subdirectory may not work without an explicit `opencode.json` entry. Add a
+   `plugin` entry with an **absolute path** to the entry file:
+
+   ```json
+   {
+     "plugin": ["/Users/you/.config/opencode/plugins/opencode-ble-uart-bridge/opencode-ble-uart-bridge.ts"]
+   }
+   ```
+
+2. **Check the TypeScript compilation.** OpenCode 1.17+ uses stricter TypeScript
+   checking for local plugins. If you see compilation errors in the plugin
+   output, ensure you are using the latest version of the plugin source from
+   `tools/ble/ble_uart_bridge/demos/opencode/src/`.
+
+3. **Check the daemon is running and reachable.** The plugin calls
+   `GET http://127.0.0.1:8888/status` on startup. If the daemon is not running,
+   the plugin enters a "disabled" forwarding state. Start the daemon first:
+
+   ```bash
+   python tools/ble/ble_uart_bridge/main.py daemon "<device_id>"
+   ```
+
+   Then restart OpenCode. The daemon URL can be customized with the
+   `OPENCODE_BLE_DAEMON_URL` environment variable.
+
 ## Open items
 
-- Add an integration test with a mocked BLE daemon.
+- Add an integration test with a mocked ESP-BLE-UART Daemon.

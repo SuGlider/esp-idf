@@ -286,7 +286,9 @@ def test_cmake_preset_basic_functionality(test_app_copy: Path, default_idf_env: 
 
     # Test default preset auto-selection
     ret = run_idf_py('reconfigure')
-    assert "CMake presets file found but no preset name given; using 'default' preset" in ret.stderr
+    # This informational note is emitted via the shared esp_pylib logger's note(), which writes
+    # to stdout (warnings/errors go to stderr).
+    assert "CMake presets file found but no preset name given; using 'default' preset" in ret.stdout
     assert (test_app_copy / 'build' / 'default').is_dir()
     assert (test_app_copy / 'build' / 'default' / 'sdkconfig').is_file()
     # Verify that sdkconfig is NOT in the project root, even when no preset is specified but auto-selected
@@ -438,3 +440,14 @@ def test_cmake_preset_sdkconfig_defaults_integration(test_app_copy: Path) -> Non
     sdkconfig_content = sdkconfig_path.read_text()
     assert 'CONFIG_LWIP_IPV6=y' in sdkconfig_content
     assert 'CONFIG_ESP_TASK_WDT_TIMEOUT_S=15' in sdkconfig_content
+
+
+def test_cmake_llvm_optimizations_framework(idf_copy: Path) -> None:
+    logging.info('Test CMake configuration of the LLVM optimization framework')
+    test_project = idf_copy / 'tools' / 'cmake' / 'tests' / 'llvm_optimizations'
+    # The standalone test project fakes the compiler ID and CONFIG_* variables to
+    # verify component/source scope flag selection, custom options, non-leakage
+    # to unselected sources, exported IDF_LLVM_OPT_* for stock CMake, and the
+    # non-Clang no-op. run_cmake raises on failure.
+    # Windows runners default to NMake; nmake is absent. Ninja is on PATH.
+    run_cmake(str(test_project), '-G', 'Ninja')

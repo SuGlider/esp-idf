@@ -28,7 +28,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
-#include "hal/emac_periph.h"
+#include "emac_priv.h"
 #include "hal/emac_hal.h"
 #include "hal/emac_clk.h"
 #include "sdkconfig.h"
@@ -145,6 +145,10 @@ static esp_err_t emac_create_retention_module(emac_esp32_t *emac)
     if (sleep_retention_is_module_inited(module) && !sleep_retention_is_module_created(module)) {
         if ((ret = sleep_retention_module_allocate(module)) != ESP_OK) {
             ESP_LOGW(TAG, "create retention link failed on EMAC, power domain won't be turned off during sleep");
+        } else {
+            if ((ret = sleep_retention_module_attach(module)) != ESP_OK) {
+                ESP_LOGW(TAG, "attach retention link failed on EMAC, power domain won't be turned off during sleep");
+            }
         }
     }
     return ret;
@@ -172,6 +176,7 @@ static void emac_free_retention_module(emac_esp32_t *emac)
 {
     sleep_retention_module_t module = emac_reg_retention_info.module_id;
     if (sleep_retention_is_module_created(module)) {
+        sleep_retention_module_detach(module);
         sleep_retention_module_free(module);
     }
 }
@@ -551,28 +556,39 @@ static esp_err_t emac_esp32_transmit(esp_eth_mac_t *mac, uint8_t *buf, uint32_t 
     return ESP_OK;
 }
 
-static esp_err_t emac_esp32_transmit_ctrl_vargs(esp_eth_mac_t *mac, void *ctrl, uint32_t argc, va_list args)
+static esp_err_t emac_esp32_transmit_ctrl_bufs(esp_eth_mac_t *mac, void *ctrl, const esp_eth_buf_desc_t *bufs, size_t buf_count)
 {
     emac_esp32_t *emac = __containerof(mac, emac_esp32_t, parent);
-    uint32_t buf_num = argc / 2;
-
-    emac_esp_dma_transmit_buff_t buff_array[buf_num];
+    emac_esp_dma_transmit_buff_t buff_array[buf_count];
 
     uint32_t exp_len = 0;
-    for (int i = 0; i < buf_num; i++) {
-        buff_array[i].buf = va_arg(args, uint8_t *);
-        buff_array[i].size = va_arg(args, uint32_t);
+    for (size_t i = 0; i < buf_count; i++) {
+        buff_array[i].buf = bufs[i].buf;
+        buff_array[i].size = bufs[i].len;
         exp_len += buff_array[i].size;
     }
 
     eth_mac_time_t *ts = (eth_mac_time_t *)ctrl;
-    uint32_t sent_len = emac_esp_dma_transmit_frame_ext(emac->emac_dma_hndl, buff_array, buf_num, ts);
+    uint32_t sent_len = emac_esp_dma_transmit_frame_ext(emac->emac_dma_hndl, buff_array, (uint32_t)buf_count, ts);
 
-    if(sent_len != exp_len) {
+    if (sent_len != exp_len) {
         ESP_LOGD(TAG, "insufficient TX buffer size");
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
+}
+
+static esp_err_t emac_esp32_transmit_ctrl_vargs(esp_eth_mac_t *mac, void *ctrl, uint32_t argc, va_list args)
+{
+    uint32_t buf_num = argc / 2;
+    esp_eth_buf_desc_t bufs[buf_num];
+
+    for (uint32_t i = 0; i < buf_num; i++) {
+        bufs[i].buf = va_arg(args, uint8_t *);
+        bufs[i].len = va_arg(args, uint32_t);
+    }
+
+    return emac_esp32_transmit_ctrl_bufs(mac, ctrl, bufs, buf_num);
 }
 
 static esp_err_t emac_esp32_receive(esp_eth_mac_t *mac, uint8_t *buf, uint32_t *length)
@@ -599,7 +615,7 @@ static void emac_esp32_rx_task(void *arg)
     while (1) {
         // block indefinitely until got notification from underlay event
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        do {
+        while (1) {
             /* set max expected frame len */
             uint32_t frame_len = ETH_MAX_PACKET_SIZE;
             buffer = emac_esp_dma_alloc_recv_buf(emac->emac_dma_hndl, &frame_len);
@@ -629,9 +645,21 @@ static void emac_esp32_rx_task(void *arg)
                 ESP_LOGE(TAG, "no mem for receive buffer");
                 /* ensures that interface to EMAC does not get stuck with unprocessed frames */
                 emac_esp_dma_flush_recv_frame(emac->emac_dma_hndl);
-            }
-            emac_esp_dma_get_remain_frames(emac->emac_dma_hndl, &emac->frames_remain, &emac->free_rx_descriptor);
+            } else {
+                /* no valid frame: either the ring is drained or an erroneous frame was flushed with frames still behind it */
+                emac_esp_dma_get_remain_frames(emac->emac_dma_hndl, &emac->frames_remain, &emac->free_rx_descriptor);
+                if (emac->frames_remain == 0) {
 #if CONFIG_ETH_SOFT_FLOW_CONTROL
+                    /* ring drained, release any standing pause before idling */
+                    emac_hal_send_pause_frame(&emac->hal, false);
+#endif
+                    break;
+                }
+                /* erroneous frame flushed; keep draining the frames behind it */
+                continue;
+            }
+#if CONFIG_ETH_SOFT_FLOW_CONTROL
+            emac_esp_dma_get_remain_frames(emac->emac_dma_hndl, &emac->frames_remain, &emac->free_rx_descriptor);
             // we need to do extra checking of remained frames in case there are no unhandled frames left, but pause frame is still undergoing
             if ((emac->free_rx_descriptor < emac->flow_control_low_water_mark) && emac->do_flow_ctrl && emac->frames_remain) {
                 emac_hal_send_pause_frame(&emac->hal, true);
@@ -639,7 +667,7 @@ static void emac_esp32_rx_task(void *arg)
                 emac_hal_send_pause_frame(&emac->hal, false);
             }
 #endif
-        } while (emac->frames_remain);
+        }
     }
 }
 
@@ -862,6 +890,7 @@ static esp_err_t emac_esp_alloc_driver_obj(const eth_mac_config_t *config, emac_
                 .arg = (void *)emac
             },
         },
+        .attribute = SLEEP_RETENTION_MODULE_ATTR_ATTACH,
         .depends = RETENTION_MODULE_BITMAP_INIT(CLOCK_SYSTEM)
     };
     if (sleep_retention_module_init(module, &init_param) != ESP_OK) {
@@ -1233,7 +1262,11 @@ esp_eth_mac_t *esp_eth_mac_new_esp32(const eth_esp32_emac_config_t *esp32_config
     emac->parent.set_peer_pause_ability = emac_esp32_set_peer_pause_ability;
     emac->parent.enable_flow_ctrl = emac_esp32_enable_flow_ctrl;
     emac->parent.transmit = emac_esp32_transmit;
+    emac->parent.transmit_ctrl_bufs = emac_esp32_transmit_ctrl_bufs;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     emac->parent.transmit_ctrl_vargs = emac_esp32_transmit_ctrl_vargs;
+#pragma GCC diagnostic pop
     emac->parent.receive = emac_esp32_receive;
     emac->parent.custom_ioctl = emac_esp_custom_ioctl;
 #ifdef SOC_EMAC_IEEE1588V2_SUPPORTED

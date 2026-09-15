@@ -38,8 +38,10 @@
 #include "hal/dma2d_ll.h"
 #include "hal/efuse_hal.h"
 #include "esp_memory_utils.h"
+#if CONFIG_ESP_SYSTEM_HW_STACK_GUARD && CONFIG_COMPILER_ENABLE_RISCV_ZCMP
+#include "esp_private/hw_stack_guard.h"
+#endif
 
-#define ALIGN_DOWN(val, align)  ((val) & ~((align) - 1))
 extern int _bss_end;
 
 void esp_system_reset_modules_on_exit(void)
@@ -131,6 +133,7 @@ void esp_system_reset_modules_on_exit(void)
     CLEAR_PERI_REG_MASK(HP_SYS_CLKRST_HP_RST_EN2_REG, HP_SYS_CLKRST_REG_RST_EN_KM);
     CLEAR_PERI_REG_MASK(HP_SYS_CLKRST_HP_RST_EN2_REG, HP_SYS_CLKRST_REG_RST_EN_RSA);
     CLEAR_PERI_REG_MASK(HP_SYS_CLKRST_HP_RST_EN2_REG, HP_SYS_CLKRST_REG_RST_EN_SHA);
+    CLEAR_PERI_REG_MASK(HP_SYSTEM_ECC_PD_CTRL_REG, HP_SYSTEM_ECC_MEM_FORCE_PD);
 
 #if CONFIG_ESP32P4_REV_MIN_FULL < 101
     if (efuse_hal_chip_revision() < 101) {
@@ -251,7 +254,14 @@ void esp_restart_noos(void)
         // If stack is in external RAM (CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM), switch SP to
         // internal RAM before disabling the cache to avoid a "Cache disabled but cached memory
         // region accessed" crash.
-        uint32_t new_sp = ALIGN_DOWN((uint32_t)&_bss_end, 16);
+
+#if CONFIG_ESP_SYSTEM_HW_STACK_GUARD && CONFIG_COMPILER_ENABLE_RISCV_ZCMP
+        // Stop hw stack guard before changing SP: new SP is outside task stack bounds.
+        // rtc_clk_cpu_set_to_default_config() (called later) uses vPortEnterCritical() via
+        // ENABLE_CLK_GATE, which can trigger DIG-661 (assist-debug interrupt with mstatus.mie=0).
+        esp_hw_stack_guard_monitor_stop();
+#endif
+        uint32_t new_sp = ESP_ALIGN_DOWN((uint32_t)&_bss_end, 16);
         rv_utils_set_sp((void *)new_sp);
     }
 #endif

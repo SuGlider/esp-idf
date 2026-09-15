@@ -1116,6 +1116,7 @@ typedef UINT8 tBTM_SCO_ROUTE_TYPE;
 #define BTM_SCO_CODEC_NONE          0x0000
 #define BTM_SCO_CODEC_CVSD          0x0001
 #define BTM_SCO_CODEC_MSBC          0x0002
+#define BTM_SCO_CODEC_LC3           0x0004
 typedef UINT16 tBTM_SCO_CODEC_TYPE;
 
 
@@ -1817,6 +1818,9 @@ typedef struct {
     BOOLEAN is_pair_cancel;
     BOOLEAN smp_over_br;
     tSMP_AUTH_REQ auth_mode;
+    /* Mirrors tSMP_CMPL.keep_bond; layouts must stay identical because
+       btm_proc_smp_cback casts tSMP_EVT_DATA to tBTM_LE_EVT_DATA. */
+    BOOLEAN keep_bond;
 } tBTM_LE_COMPLT;
 #endif
 

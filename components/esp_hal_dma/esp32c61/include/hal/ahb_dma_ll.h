@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2024-2025 Espressif Systems (Shanghai) CO LTD
+ * SPDX-FileCopyrightText: 2024-2026 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -20,6 +20,10 @@ extern "C" {
 #endif
 
 #define AHB_DMA_LL_GET_HW(id) (((id) == 0) ? (&AHB_DMA) : NULL)
+
+#define AHB_DMA_LL_SUPPORTED_BURST_SIZE_MASK (GDMA_BURST_SIZE_SUPPORT_4 | \
+                                              GDMA_BURST_SIZE_SUPPORT_16 | \
+                                              GDMA_BURST_SIZE_SUPPORT_32)
 
 #define GDMA_LL_CHANNEL_MAX_PRIORITY 5 // supported priority levels: [0,5]
 #define GDMA_LL_CHANNEL_MAX_WEIGHT   15  // supported weight levels: [0,15]
@@ -232,9 +236,6 @@ static inline void ahb_dma_ll_rx_set_burst_size(ahb_dma_dev_t *dev, uint32_t cha
         break;
     case 32:
         burst_mode = 2; // incr8
-        break;
-    case 64:
-        burst_mode = 3; // incr16
         break;
     default:
         HAL_ASSERT(false);
@@ -510,9 +511,6 @@ static inline void ahb_dma_ll_tx_set_burst_size(ahb_dma_dev_t *dev, uint32_t cha
         break;
     case 32:
         burst_mode = 2; // incr8
-        break;
-    case 64:
-        burst_mode = 3; // incr16
         break;
     default:
         HAL_ASSERT(false);

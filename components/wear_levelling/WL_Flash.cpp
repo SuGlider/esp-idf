@@ -40,6 +40,10 @@ WL_Flash::~WL_Flash()
 
 esp_err_t WL_Flash::config(wl_config_t *cfg, Flash_Access *partition)
 {
+    if (cfg == NULL || partition == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     ESP_LOGV(TAG, "%s partition_start_addr=0x%08" PRIx32 ", wl_partition_size=0x%08" PRIx32 ", wl_page_size=0x%08" PRIx32 ", flash_sector_size=0x%08" PRIx32 ", wl_update_rate=0x%08" PRIx32 ", wl_pos_update_record_size=0x%08" PRIx32 ", version=0x%08" PRIx32 ", wl_temp_buff_size=0x%08" PRIx32 , __func__,
              (uint32_t) cfg->wl_partition_start_addr,
              cfg->wl_partition_size,
@@ -57,13 +61,7 @@ esp_err_t WL_Flash::config(wl_config_t *cfg, Flash_Access *partition)
         this->cfg.wl_temp_buff_size = this->cfg.wl_pos_update_record_size;
     }
     this->configured = false;
-    if (cfg == NULL) {
-        result = ESP_ERR_INVALID_ARG;
-    }
     this->partition = partition;
-    if (partition == NULL) {
-        result = ESP_ERR_INVALID_ARG;
-    }
     if ((this->cfg.flash_sector_size % this->cfg.wl_temp_buff_size) != 0) {
         result = ESP_ERR_INVALID_ARG;
     }
@@ -577,6 +575,10 @@ esp_err_t WL_Flash::write(size_t dest_addr, const void *src, size_t size)
     if (!this->initialized) {
         return ESP_ERR_INVALID_STATE;
     }
+    if (size == 0) {
+        // size==0: (size-1) unsigned underflow would OOB the caller buffer.
+        return ESP_OK;
+    }
     ESP_LOGD(TAG, "%s - dest_addr= 0x%08" PRIx32 ", size= 0x%08" PRIx32 , __func__, (uint32_t) dest_addr, (uint32_t) size);
     uint32_t count = (size - 1) / this->cfg.wl_page_size;
     for (size_t i = 0; i < count; i++) {
@@ -595,6 +597,10 @@ esp_err_t WL_Flash::read(size_t src_addr, void *dest, size_t size)
     esp_err_t result = ESP_OK;
     if (!this->initialized) {
         return ESP_ERR_INVALID_STATE;
+    }
+    if (size == 0) {
+        // Same size==0 guard as write(); avoid (size-1) underflow below.
+        return ESP_OK;
     }
     ESP_LOGD(TAG, "%s - src_addr= 0x%08" PRIx32 ", size= 0x%08" PRIx32 , __func__, (uint32_t) src_addr, (uint32_t) size);
     uint32_t count = (size - 1) / this->cfg.wl_page_size;

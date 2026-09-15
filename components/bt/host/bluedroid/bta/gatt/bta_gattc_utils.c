@@ -668,6 +668,29 @@ BOOLEAN bta_gattc_check_notif_registry(tBTA_GATTC_RCB  *p_clreg, tBTA_GATTC_SERV
     return FALSE;
 
 }
+
+/*******************************************************************************
+**
+** Function         bta_gattc_any_notif_registry
+**
+** Description      check if any GATT client app registered for the notification.
+**
+** Returns          TRUE if any app registered, FALSE otherwise.
+**
+*******************************************************************************/
+BOOLEAN bta_gattc_any_notif_registry(tBTA_GATTC_SERV *p_srcb, tBTA_GATTC_NOTIFY *p_notify)
+{
+    UINT8 i;
+
+    for (i = 0; i < BTA_GATTC_CL_MAX; i++) {
+        if (bta_gattc_cb.cl_rcb[i].in_use &&
+            bta_gattc_check_notif_registry(&bta_gattc_cb.cl_rcb[i], p_srcb, p_notify)) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 /*******************************************************************************
 **
 ** Function         bta_gattc_clear_notif_registration
@@ -879,7 +902,8 @@ void bta_gattc_send_open_cback( tBTA_GATTC_RCB *p_clreg, tBTA_GATT_STATUS status
 **
 *******************************************************************************/
 void bta_gattc_send_connect_cback( tBTA_GATTC_RCB *p_clreg, BD_ADDR remote_bda, UINT16 conn_id,
-                                tBTA_GATT_CONN_PARAMS conn_params, UINT8 link_role, UINT8 ble_addr_type, UINT16 conn_handle)
+                                tBTA_GATT_CONN_PARAMS conn_params, UINT8 link_role, UINT8 ble_addr_type,
+                                UINT16 conn_handle, UINT8 adv_handle, UINT16 sync_handle)
 {
     tBTA_GATTC      cb_data;
 
@@ -895,6 +919,8 @@ void bta_gattc_send_connect_cback( tBTA_GATTC_RCB *p_clreg, BD_ADDR remote_bda, 
         bdcpy(cb_data.connect.remote_bda, remote_bda);
         cb_data.connect.ble_addr_type = ble_addr_type;
         cb_data.connect.conn_handle = conn_handle;
+        cb_data.connect.adv_handle = adv_handle;
+        cb_data.connect.sync_handle = sync_handle;
 
         (*p_clreg->p_cback)(BTA_GATTC_CONNECT_EVT, &cb_data);
     }

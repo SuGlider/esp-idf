@@ -61,7 +61,7 @@ IDF 监视器是一个串行终端程序，使用了 esp-idf-monitor_ 包，用�
      -
    * - Ctrl + C
      - 中断正在运行的应用程序
-     - 暂停 IDF 监视器并运行 GDB_ 项目调试器，从而在运行时调试应用程序。这需要启用 :ref:`CONFIG_ESP_SYSTEM_GDBSTUB_RUNTIME` 选项。
+     - 暂停 IDF 监视器并运行 GDB_ 项目调试器，从而在运行时调试应用程序。这需要启用 :menuitem:`CONFIG_ESP_SYSTEM_GDBSTUB_RUNTIME` 选项。
 
 除了 ``Ctrl-]`` 和 ``Ctrl-T``，其他快捷键信号会通过串口发送到目标设备。
 
@@ -73,7 +73,7 @@ IDF 监视器会根据日志级别自动为输出内容进行着色。该功能�
 
 该功能默认启用。如需禁用，请使用命令行选项 ``--disable-auto-color``。
 
-着色是基于日志级别进行的，日志级别后可选择是否显示时间戳和标签。如需在 {IDF_TARGET_NAME} 端启用着色，参见 :ref:`CONFIG_LOG_COLORS`。
+着色是基于日志级别进行的，日志级别后可选择是否显示时间戳和标签。如需在 {IDF_TARGET_NAME} 端启用着色，参见 :menuitem:`CONFIG_LOG_COLORS`。
 
 有关日志的更多信息，参见 :doc:`日志记录 <../../api-reference/system/log>`。
 
@@ -241,6 +241,13 @@ ROM ELF 文件会根据 ``IDF_PATH`` 和 ``ESP_ROM_ELF_DIR`` 环境变量的路�
 
     将环境变量 ``ESP_MONITOR_DECODE`` 设置为 ``0`` 或者调用 esp_idf_monitor 的特定命令行选项 ``python -m esp_idf_monitor --disable-address-decoding`` 来禁止地址解码。
 
+.. _idf-monitor-target-detection:
+
+自动检测目标芯片
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+默认情况下，在项目中运行 ``idf.py monitor`` 会连接项目已配置的目标芯片。对于尚未构建、也未配置目标芯片的项目，该命令可连接任意目标芯片：执行命令后，程序会自动检测默认串口上的芯片，并将其传给监视器。因此，可以在新项目中直接运行 ``idf.py monitor``，无需先调用 ``idf.py set-target``。
+
 连接时复位目标芯片
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -275,9 +282,9 @@ IDF 监视器的默认复位序列可在大多数环境中使用。使用默认�
 
 GDBStub 支持在运行时进行调试。GDBStub 在目标上运行，并通过串口连接到主机从而接收调试命令。GDBStub 支持读取内存和变量、检查调用堆栈帧等命令。虽然没有 JTAG 调试通用，但由于 GDBStub 完全通过串行端口完成通信，故不需要使用特殊硬件（如 JTAG/USB 桥接器）。
 
-通过设置 :ref:`CONFIG_ESP_SYSTEM_GDBSTUB_RUNTIME`，可以将目标配置为在后台运行 GDBStub。GDBStub 将保持在后台运行，直到通过串行端口发送 ``Ctrl+C`` 导致应用程序中断（即停止程序执行），从而让 GDBStub 处理调试命令。
+通过设置 :menuitem:`CONFIG_ESP_SYSTEM_GDBSTUB_RUNTIME`，可以将目标配置为在后台运行 GDBStub。GDBStub 将保持在后台运行，直到通过串行端口发送 ``Ctrl+C`` 导致应用程序中断（即停止程序执行），从而让 GDBStub 处理调试命令。
 
-此外，还可以通过设置 :ref:`CONFIG_ESP_SYSTEM_PANIC` 为 ``GDBStub on panic`` 来配置 panic 处理程序，使其在发生 crash 事件时运行 GDBStub。当 crash 发生时，GDBStub 将通过串口输出特殊的字符串模式，表示 GDBStub 正在运行。
+此外，还可以通过设置 :menuitem:`CONFIG_ESP_SYSTEM_PANIC` 为 ``GDBStub on panic`` 来配置 panic 处理程序，使其在发生 crash 事件时运行 GDBStub。当 crash 发生时，GDBStub 将通过串口输出特殊的字符串模式，表示 GDBStub 正在运行。
 
 无论是通过发送 ``Ctrl+C`` 还是收到特殊字符串模式，IDF 监视器都会自动启动 GDB，从而让用户发送调试命令。GDB 退出后，通过 RTS 串口线复位目标。如果未连接 RTS 串口线，请按复位键，手动复位开发板。
 
@@ -361,6 +368,46 @@ GDBStub 支持在运行时进行调试。GDBStub 在目标上运行，并通过�
 
 有关配置文件的更多详细信息，请参阅 `IDF 监视器文档`_。
 
+主机侧命令标记
+==============
+
+当设备日志行以支持的标记开头时，IDF 监视器可以执行主机侧辅助命令。
+
+对于 eFuse token 解码，可在固件日志中输出以下任一格式：
+
+* ``IDF_MONITOR_EXECUTE_ESPEFUSE_SUMMARY <TOKEN> [附加参数]``
+* ``IDF_MONITOR_EXECUTE_ESPEFUSE_DUMP <TOKEN>``
+
+检测到标记后，监视器会在主机侧调用 ``espefuse``，并以内联方式打印解码结果。
+
+示例 1（带自定义表的 summary）：
+
+.. code-block:: text
+
+  I (441) app: IDF_MONITOR_EXECUTE_ESPEFUSE_SUMMARY EFSR:esp32c3:100:... --extend-efuse-table main/esp_efuse_custom_table.csv
+
+该日志行会触发等价于以下命令的主机侧执行：
+
+.. code-block:: text
+
+  espefuse --token EFSR:esp32c3:100:... --extend-efuse-table main/esp_efuse_custom_table.csv summary --active
+
+示例 2（原始转储）：
+
+.. code-block:: text
+
+  I (442) app: IDF_MONITOR_EXECUTE_ESPEFUSE_DUMP EFSR:esp32c3:100:...
+
+该日志行会触发等价于以下命令的主机侧执行：
+
+.. code-block:: text
+
+  espefuse --token EFSR:esp32c3:100:... dump
+
+.. important::
+
+    请将 token 参数视为敏感数据（尤其是 ``EFSW``/``EFSRW``），因为它们可能在这些值仍处于暂存状态、尚未烧写、也尚未受读保护时，以明文暴露密钥值。关于 token 格式和生成 API，请参见 :doc:`eFuse 管理器 <../../api-reference/system/efuse>`。
+
 
 IDF 监视器已知问题
 =================================
@@ -369,7 +416,7 @@ IDF 监视器已知问题
 
 - 消息中包含换行符时，自动着色无法检测日志级别。在这种情况下，IDF Monitor 只会为消息的第一行着色。
 
-  为了避免这个问题，可以在 menuconfig 中启用 :ref:`CONFIG_LOG_COLORS`。注意，这可能会对二进制文件的大小和性能产生一定影响。
+  为了避免这个问题，可以在 menuconfig 中启用 :menuitem:`CONFIG_LOG_COLORS`。注意，这可能会对二进制文件的大小和性能产生一定影响。
 
 - 在 Windows 上，如果在 IDF 监视器关闭之前直接关闭了终端，某些驱动程序可能无法释放串口。要解决此问题，可以尝试重新拔插 USB 线，在某些情况下，需要重启计算机。目前，已知该问题会影响 CH9102 USB-to-UART 桥接芯片，而 CP210x 和 CH340 等驱动通常不会受到影响。
 

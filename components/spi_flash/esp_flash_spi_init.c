@@ -52,6 +52,8 @@ __attribute__((unused)) static const char TAG[] = "spi_flash";
 esp_flash_t *esp_flash_default_chip = NULL;
 #endif
 
+#define ESP_FLASH_GPSPI_PERIPH_SRC_FREQ_MAX     (80*1000*1000)    //peripheral hardware limitation for clock source into peripheral
+
 #if defined CONFIG_ESPTOOLPY_FLASHFREQ_120M
 #define DEFAULT_FLASH_SPEED 120
 #elif defined CONFIG_ESPTOOLPY_FLASHFREQ_80M
@@ -174,7 +176,7 @@ static IRAM_ATTR NOINLINE_ATTR void cs_initialize(esp_flash_t *chip, const esp_f
 
     //To avoid the panic caused by flash data line conflicts during cs line
     //initialization, disable the cache temporarily
-    chip->os_func->start(chip->os_func_data, 0);
+    chip->os_func->start(chip->os_func_data, ESP_FLASH_START_FLAG_NO_READ);
     gpio_hal_input_enable(&gpio_hal, cs_io_num);
     if (cs_use_iomux) {
         gpio_hal_func_sel(&gpio_hal, cs_io_num, spics_func);
@@ -258,13 +260,13 @@ static esp_err_t acquire_spi_device(const esp_flash_spi_device_config_t *config,
 #if GPSPI_FLASH_LL_SUPPORT_CLK_SRC_PRE_DIV
 static uint32_t s_spi_find_clock_src_pre_div(uint32_t src_freq, uint32_t target_freq)
 {
-    // pre division must be even and at least 2
-    uint32_t min_div = ((src_freq / GPSPI_FLASH_LL_PERIPHERAL_FREQUENCY_MHZ) + 1) & (~0x01UL);
-    min_div = min_div < 2 ? 2 : min_div;
+    // no timing tuning, no need pre division to be even
+    uint32_t min_div = (src_freq / ESP_FLASH_GPSPI_PERIPH_SRC_FREQ_MAX);
+    min_div = min_div < 1 ? 1 : min_div;
 
     uint32_t total_div = src_freq / target_freq;
     // Loop the `div` to find a divisible value of `total_div`
-    for (uint32_t pre_div = min_div; pre_div <= total_div; pre_div += 2) {
+    for (uint32_t pre_div = min_div; pre_div <= total_div; pre_div += 1) {
         if ((total_div % pre_div) || (total_div / pre_div) > GPSPI_FLASH_LL_PERIPH_CLK_DIV_MAX) {
             continue;
         }
@@ -302,9 +304,9 @@ static uint32_t init_gpspi_clock(esp_flash_t *chip, const esp_flash_spi_device_c
     // Calculate final clock source frequency
     uint32_t final_freq_mhz;
 #if GPSPI_FLASH_LL_SUPPORT_CLK_SRC_PRE_DIV
-    uint32_t pre_div = s_spi_find_clock_src_pre_div(clk_src_freq, GPSPI_FLASH_LL_PERIPHERAL_FREQUENCY_MHZ * 1000 * 1000);
-    gpspi_flash_ll_clk_source_pre_div(spi_flash_ll_get_hw(config->host_id), pre_div / 2, 2);
-    final_freq_mhz = clk_src_freq / (pre_div);
+    uint32_t pre_div = s_spi_find_clock_src_pre_div(clk_src_freq, config->freq_mhz * 1000 * 1000);
+    gpspi_flash_ll_clk_source_pre_div(spi_flash_ll_get_hw(config->host_id), pre_div, 1);
+    final_freq_mhz = clk_src_freq / (1000 * 1000) / pre_div;
 #else
     final_freq_mhz = clk_src_freq / (1 * 1000 * 1000);
 #endif
@@ -437,17 +439,21 @@ esp_err_t spi_bus_remove_flash_device(esp_flash_t *chip)
         return ESP_ERR_INVALID_ARG;
     }
 
+    spi_bus_lock_dev_handle_t dev_handle = NULL;
+    esp_err_t ret = esp_flash_deinit_os_functions(chip, &dev_handle);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
     // Disable GPSPI clocks before cleanup
     deinit_gpspi_clock(chip);
 
-    spi_bus_lock_dev_handle_t dev_handle = NULL;
-    esp_flash_deinit_os_functions(chip, &dev_handle);
     if (dev_handle) {
         spi_bus_lock_unregister_dev(dev_handle);
     }
     free(chip->host);
     free(chip);
-    return ESP_OK;
+    return ret;
 }
 
 /* The default (ie initial boot) no-OS ROM esp_flash_os_functions_t */
@@ -630,10 +636,8 @@ esp_err_t esp_flash_app_init(void)
 #if CONFIG_SPI_FLASH_ENABLE_COUNTERS
     esp_flash_reset_counters();
 #endif
-#if CONFIG_SPI_FLASH_SHARE_SPI1_BUS
-    err = esp_flash_init_main_bus_lock();
+    err = esp_flash_app_init_os_functions();
     if (err != ESP_OK) return err;
-#endif
     err = esp_flash_app_enable_os_functions(&default_chip);
     return err;
 }

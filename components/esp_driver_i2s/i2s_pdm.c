@@ -129,6 +129,12 @@ static esp_err_t i2s_pdm_tx_set_slot(i2s_chan_handle_t handle, const i2s_pdm_tx_
     ESP_RETURN_ON_FALSE(slot_cfg->data_fmt != I2S_PDM_DATA_FMT_PCM ||
                         i2s_ll_is_pcm2pdm_supported(handle->controller->id),
                         ESP_ERR_NOT_SUPPORTED, TAG, "PCM2PDM converter is not supported on selected port");
+#if SOC_I2S_PDM_MAX_TX_LINES > 1
+    int id = handle->controller->id;
+    ESP_RETURN_ON_FALSE(slot_cfg->line_mode != I2S_PDM_TX_TWO_LINE_DAC ||
+                        i2s_periph_signal[id].data_out_sigs[1] != (uint8_t) -1,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "PDM TX dual-line mode is not supported on selected port");
+#endif
     /* Update the total slot num and active slot num */
     handle->is_raw_pdm = slot_cfg->data_fmt == I2S_PDM_DATA_FMT_RAW;
     handle->total_slot = 2;
@@ -139,9 +145,9 @@ static esp_err_t i2s_pdm_tx_set_slot(i2s_chan_handle_t handle, const i2s_pdm_tx_
     /* The DMA buffer need to re-allocate if the buffer size changed.
      * Skip when GDMA is not the data path (e.g. Bluetooth destination), since the channel never owns a DMA buffer. */
     if (I2S_CHANNEL_USES_DMA(handle) && handle->dma.buf_size != buf_size) {
-        ESP_RETURN_ON_ERROR(i2s_free_dma_desc(handle), TAG, "failed to free the old dma descriptor");
-        ESP_RETURN_ON_ERROR(i2s_alloc_dma_desc(handle, buf_size),
-                            TAG, "allocate memory for dma descriptor failed");
+        ESP_RETURN_ON_ERROR(i2s_free_dma_resources(handle), TAG, "failed to free the old dma resources");
+        ESP_RETURN_ON_ERROR(i2s_alloc_dma_resources(handle, buf_size),
+                            TAG, "allocate dma resources failed");
     }
     /* Share bck and ws signal in full-duplex mode */
     i2s_ll_share_bck_ws(handle->controller->hal.dev, handle->controller->full_duplex);
@@ -214,8 +220,6 @@ esp_err_t i2s_channel_init_pdm_tx_mode(i2s_chan_handle_t handle, const i2s_pdm_t
 #endif
     I2S_NULL_POINTER_CHECK(TAG, handle);
     ESP_RETURN_ON_FALSE(handle->dir == I2S_DIR_TX, ESP_ERR_INVALID_ARG, TAG, "This channel handle is not a TX handle");
-    ESP_RETURN_ON_FALSE(i2s_ll_is_pdm_supported(handle->controller->id),
-                        ESP_ERR_NOT_SUPPORTED, TAG, "PDM TX mode is not supported on selected port");
 
     esp_err_t ret = ESP_OK;
 
@@ -228,6 +232,9 @@ esp_err_t i2s_channel_init_pdm_tx_mode(i2s_chan_handle_t handle, const i2s_pdm_t
     }
     handle->mode_info = calloc(1, sizeof(i2s_pdm_tx_config_t));
     ESP_GOTO_ON_FALSE(handle->mode_info, ESP_ERR_NO_MEM, err, TAG, "no memory for storing the configurations");
+    if (I2S_CHANNEL_USES_DMA(handle)) {
+        ESP_GOTO_ON_ERROR(i2s_prepare_dma(handle), err, TAG, "prepare dma failed");
+    }
     /* i2s_set_pdm_tx_slot should be called before i2s_set_pdm_tx_clock and i2s_pdm_tx_set_gpio
      * while initializing, because clock and gpio is relay on the slot */
     ESP_GOTO_ON_ERROR(i2s_pdm_tx_set_slot(handle, &pdm_tx_cfg->slot_cfg), err, TAG, "initialize channel failed while setting slot");
@@ -236,6 +243,9 @@ esp_err_t i2s_channel_init_pdm_tx_mode(i2s_chan_handle_t handle, const i2s_pdm_t
     if (I2S_CHANNEL_USES_DMA(handle)) {
         ESP_GOTO_ON_ERROR(i2s_init_dma_intr(handle, I2S_INTR_ALLOC_FLAGS), err, TAG, "initialize dma interrupt failed");
     }
+#if SOC_I2S_SUPPORTS_TX_FIFO_SYNC
+    ESP_GOTO_ON_ERROR(i2s_init_i2s_intr(handle), err, TAG, "initialize I2S interrupt failed");
+#endif
 
     i2s_ll_tx_enable_pdm(handle->controller->hal.dev, pdm_tx_cfg->slot_cfg.data_fmt == I2S_PDM_DATA_FMT_PCM);
     i2s_ll_set_destination(handle->controller->hal.dev, handle->dir, handle->destination);
@@ -249,6 +259,10 @@ esp_err_t i2s_channel_init_pdm_tx_mode(i2s_chan_handle_t handle, const i2s_pdm_t
         pm_type = ESP_PM_NO_LIGHT_SLEEP;
     }
 #endif // SOC_I2S_SUPPORTS_APLL
+    if (I2S_CHANNEL_USES_DMA(handle) && handle->dma.buffer_in_psram) {
+        // use CPU_MAX lock to ensure PSRAM bandwidth and usability during DFS
+        pm_type = ESP_PM_CPU_FREQ_MAX;
+    }
     ESP_GOTO_ON_ERROR(esp_pm_lock_create(pm_type, 0, "i2s_driver", &handle->pm_lock), err, TAG, "I2S pm lock create failed");
 #endif
 
@@ -300,6 +314,10 @@ esp_err_t i2s_channel_reconfig_pdm_tx_clock(i2s_chan_handle_t handle, const i2s_
             pm_type = ESP_PM_NO_LIGHT_SLEEP;
         }
 #endif // SOC_I2S_SUPPORTS_APLL
+        if (I2S_CHANNEL_USES_DMA(handle) && handle->dma.buffer_in_psram) {
+            // use CPU_MAX lock to ensure PSRAM bandwidth and usability during DFS
+            pm_type = ESP_PM_CPU_FREQ_MAX;
+        }
         ESP_GOTO_ON_ERROR(esp_pm_lock_create(pm_type, 0, "i2s_driver", &handle->pm_lock), err, TAG, "I2S pm lock create failed");
     }
 #endif //CONFIG_PM_ENABLE
@@ -327,11 +345,12 @@ esp_err_t i2s_channel_reconfig_pdm_tx_slot(i2s_chan_handle_t handle, const i2s_p
     i2s_pdm_tx_config_t *pdm_tx_cfg = (i2s_pdm_tx_config_t *)handle->mode_info;
     ESP_GOTO_ON_FALSE(pdm_tx_cfg, ESP_ERR_INVALID_STATE, err, TAG, "initialization not complete");
 
+    uint32_t old_slot_bit_width = pdm_tx_cfg->slot_cfg.slot_bit_width;
+
     ESP_GOTO_ON_ERROR(i2s_pdm_tx_set_slot(handle, slot_cfg), err, TAG, "set i2s standard slot failed");
 
     /* If the slot bit width changed, then need to update the clock */
-    uint32_t slot_bits = slot_cfg->slot_bit_width == I2S_SLOT_BIT_WIDTH_AUTO ? slot_cfg->data_bit_width : slot_cfg->slot_bit_width;
-    if (pdm_tx_cfg->slot_cfg.slot_bit_width != slot_bits) {
+    if (pdm_tx_cfg->slot_cfg.slot_bit_width != old_slot_bit_width) {
         i2s_clock_src_t old_clk_src = pdm_tx_cfg->clk_cfg.clk_src;
 #ifdef I2S_LL_DEFAULT_CLK_SRC
         if (old_clk_src == I2S_CLK_SRC_DEFAULT) {
@@ -478,6 +497,15 @@ static esp_err_t i2s_pdm_rx_set_slot(i2s_chan_handle_t handle, const i2s_pdm_rx_
     ESP_RETURN_ON_FALSE(slot_cfg->data_fmt != I2S_PDM_DATA_FMT_PCM ||
                         i2s_ll_is_pdm2pcm_supported(handle->controller->id),
                         ESP_ERR_NOT_SUPPORTED, TAG, "PDM2PCM converter is not supported on selected port");
+#if SOC_I2S_PDM_MAX_RX_LINES > 1
+    int id = handle->controller->id;
+    for (int i = 0; i < SOC_I2S_PDM_MAX_RX_LINES; i++) {
+        if (slot_cfg->slot_mask & (0x03 << (i * 2))) {
+            ESP_RETURN_ON_FALSE(i2s_periph_signal[id].data_in_sigs[i] != (uint8_t) -1,
+                                ESP_ERR_NOT_SUPPORTED, TAG, "PDM RX line %d is not supported on selected port", i);
+        }
+    }
+#endif
     /* Update the total slot num and active slot num */
     handle->is_raw_pdm = slot_cfg->data_fmt == I2S_PDM_DATA_FMT_RAW;
     handle->total_slot = 2;
@@ -488,9 +516,9 @@ static esp_err_t i2s_pdm_rx_set_slot(i2s_chan_handle_t handle, const i2s_pdm_rx_
     /* The DMA buffer need to re-allocate if the buffer size changed.
      * Skip when GDMA is not the data path (e.g. Bluetooth destination), since the channel never owns a DMA buffer. */
     if (I2S_CHANNEL_USES_DMA(handle) && handle->dma.buf_size != buf_size) {
-        ESP_RETURN_ON_ERROR(i2s_free_dma_desc(handle), TAG, "failed to free the old dma descriptor");
-        ESP_RETURN_ON_ERROR(i2s_alloc_dma_desc(handle, buf_size),
-                            TAG, "allocate memory for dma descriptor failed");
+        ESP_RETURN_ON_ERROR(i2s_free_dma_resources(handle), TAG, "failed to free the old dma resources");
+        ESP_RETURN_ON_ERROR(i2s_alloc_dma_resources(handle, buf_size),
+                            TAG, "allocate dma resources failed");
     }
     /* Share bck and ws signal in full-duplex mode */
     i2s_ll_share_bck_ws(handle->controller->hal.dev, handle->controller->full_duplex);
@@ -565,8 +593,6 @@ esp_err_t i2s_channel_init_pdm_rx_mode(i2s_chan_handle_t handle, const i2s_pdm_r
 #endif
     I2S_NULL_POINTER_CHECK(TAG, handle);
     ESP_RETURN_ON_FALSE(handle->dir == I2S_DIR_RX, ESP_ERR_INVALID_ARG, TAG, "This channel handle is not a RX handle");
-    ESP_RETURN_ON_FALSE(i2s_ll_is_pdm_supported(handle->controller->id),
-                        ESP_ERR_NOT_SUPPORTED, TAG, "PDM RX mode is not supported on selected port");
 
     esp_err_t ret = ESP_OK;
 
@@ -579,6 +605,9 @@ esp_err_t i2s_channel_init_pdm_rx_mode(i2s_chan_handle_t handle, const i2s_pdm_r
     }
     handle->mode_info = calloc(1, sizeof(i2s_pdm_rx_config_t));
     ESP_GOTO_ON_FALSE(handle->mode_info, ESP_ERR_NO_MEM, err, TAG, "no memory for storing the configurations");
+    if (I2S_CHANNEL_USES_DMA(handle)) {
+        ESP_GOTO_ON_ERROR(i2s_prepare_dma(handle), err, TAG, "prepare dma failed");
+    }
     /* i2s_set_pdm_rx_slot should be called before i2s_set_pdm_rx_clock and i2s_pdm_rx_set_gpio while initializing, because clock is relay on the slot */
     ESP_GOTO_ON_ERROR(i2s_pdm_rx_set_slot(handle, &pdm_rx_cfg->slot_cfg), err, TAG, "initialize channel failed while setting slot");
     ESP_GOTO_ON_ERROR(i2s_pdm_rx_set_gpio(handle, &pdm_rx_cfg->gpio_cfg), err, TAG, "initialize channel failed while setting gpio pins");
@@ -599,6 +628,10 @@ esp_err_t i2s_channel_init_pdm_rx_mode(i2s_chan_handle_t handle, const i2s_pdm_r
         pm_type = ESP_PM_NO_LIGHT_SLEEP;
     }
 #endif // SOC_I2S_SUPPORTS_APLL
+    if (I2S_CHANNEL_USES_DMA(handle) && handle->dma.buffer_in_psram) {
+        // use CPU_MAX lock to ensure PSRAM bandwidth and usability during DFS
+        pm_type = ESP_PM_CPU_FREQ_MAX;
+    }
     ESP_GOTO_ON_ERROR(esp_pm_lock_create(pm_type, 0, "i2s_driver", &handle->pm_lock), err, TAG, "I2S pm lock create failed");
 #endif
 
@@ -650,6 +683,10 @@ esp_err_t i2s_channel_reconfig_pdm_rx_clock(i2s_chan_handle_t handle, const i2s_
             pm_type = ESP_PM_NO_LIGHT_SLEEP;
         }
 #endif // SOC_I2S_SUPPORTS_APLL
+        if (I2S_CHANNEL_USES_DMA(handle) && handle->dma.buffer_in_psram) {
+            // use CPU_MAX lock to ensure PSRAM bandwidth and usability during DFS
+            pm_type = ESP_PM_CPU_FREQ_MAX;
+        }
         ESP_GOTO_ON_ERROR(esp_pm_lock_create(pm_type, 0, "i2s_driver", &handle->pm_lock), err, TAG, "I2S pm lock create failed");
     }
 #endif //CONFIG_PM_ENABLE
@@ -677,11 +714,12 @@ esp_err_t i2s_channel_reconfig_pdm_rx_slot(i2s_chan_handle_t handle, const i2s_p
     i2s_pdm_rx_config_t *pdm_rx_cfg = (i2s_pdm_rx_config_t *)handle->mode_info;
     ESP_GOTO_ON_FALSE(pdm_rx_cfg, ESP_ERR_INVALID_STATE, err, TAG, "initialization not complete");
 
+    uint32_t old_slot_bit_width = pdm_rx_cfg->slot_cfg.slot_bit_width;
+
     ESP_GOTO_ON_ERROR(i2s_pdm_rx_set_slot(handle, slot_cfg), err, TAG, "set i2s standard slot failed");
 
     /* If the slot bit width changed, then need to update the clock */
-    uint32_t slot_bits = slot_cfg->slot_bit_width == I2S_SLOT_BIT_WIDTH_AUTO ? slot_cfg->data_bit_width : slot_cfg->slot_bit_width;
-    if (pdm_rx_cfg->slot_cfg.slot_bit_width != slot_bits) {
+    if (pdm_rx_cfg->slot_cfg.slot_bit_width != old_slot_bit_width) {
         i2s_clock_src_t old_clk_src = pdm_rx_cfg->clk_cfg.clk_src;
 #ifdef I2S_LL_DEFAULT_CLK_SRC
         if (old_clk_src == I2S_CLK_SRC_DEFAULT) {

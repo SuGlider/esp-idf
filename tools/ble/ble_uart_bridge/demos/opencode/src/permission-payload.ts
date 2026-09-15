@@ -7,9 +7,51 @@ import {
   MAX_METADATA_VALUE_CHARS,
   METADATA_DISPLAY_KEYS,
 } from "./config"
-import type { PermissionEventProperties } from "./types"
+import type { PermissionEventProperties, RawPermissionEvent } from "./types"
 
-/** Create a unique event ID for messages sent to the BLE daemon. */
+/**
+ * Normalize raw permission event properties from either the internal OpenCode
+ * event system (type="permission.asked") or the SDK event system
+ * (type="permission.updated") into the PermissionEventProperties shape that
+ * this plugin's payload builders and permission queue expect.
+ *
+ * The two event systems use different field names for similar concepts:
+ * - Internal `permission` ↔ SDK `type`
+ * - Internal `patterns` (string[]) ↔ SDK `pattern` (string | string[])
+ * - Internal has `tool_name`/`tool_input`; SDK has `messageID`/`callID`/`time`
+ */
+export function normalizePermissionEvent(raw: RawPermissionEvent): PermissionEventProperties {
+  // Normalize patterns: SDK Permission uses `pattern` (string | string[]),
+  // internal events use `patterns` (string[]).
+  let patterns: string[] | undefined
+  if (Array.isArray(raw.patterns)) {
+    patterns = raw.patterns as string[]
+  } else if (Array.isArray(raw.pattern)) {
+    patterns = raw.pattern as string[]
+  } else if (typeof raw.pattern === "string") {
+    patterns = [raw.pattern]
+  }
+
+  return {
+    id: raw.id,
+    requestID: raw.requestID ?? raw.id,
+    permissionID: raw.permissionID ?? raw.id,
+    sessionID: raw.sessionID ?? "",
+    permission: raw.permission ?? raw.type,
+    type: raw.type ?? raw.permission,
+    title: raw.title ?? DEFAULT_PERMISSION_TITLE,
+    metadata: typeof raw.metadata === "object" && raw.metadata !== null
+      ? (raw.metadata as Record<string, unknown>)
+      : undefined,
+    patterns,
+    tool_name: raw.tool_name,
+    tool_input: typeof raw.tool_input === "object" && raw.tool_input !== null
+      ? (raw.tool_input as Record<string, unknown>)
+      : undefined,
+  }
+}
+
+/** Create a unique event ID for messages sent to the ESP-BLE-UART Daemon. */
 function eventID() {
   return crypto.randomUUID()
 }
@@ -116,7 +158,7 @@ export function permissionRequestID(permission: PermissionEventProperties): stri
 }
 
 /**
- * Build the protocol message sent to the BLE daemon whenever OpenCode's session
+ * Build the protocol message sent to the ESP-BLE-UART Daemon whenever OpenCode's session
  * state changes. This is a one-way notification, so the BLE device can update
  * its UI but is not expected to send a reply.
  */
@@ -135,7 +177,7 @@ export function buildSessionStatusPayload(
 }
 
 /**
- * Tell the BLE daemon to dismiss any permission prompt for this session.
+ * Tell the ESP-BLE-UART Daemon to dismiss any permission prompt for this session.
  *
  * This is used when OpenCode has already moved on, for example after the
  * session becomes idle before the BLE device returns a decision.
@@ -156,7 +198,7 @@ export function buildPermissionCancelPayload(sessionID: string) {
 /**
  * Build the BLE permission prompt payload from an OpenCode permission event.
  *
- * This is the main protocol boundary between OpenCode and the BLE daemon. The
+ * This is the main protocol boundary between OpenCode and the ESP-BLE-UART Daemon. The
  * outer fields describe routing and reply behavior; the nested `payload` fields
  * are intentionally small and display-oriented for the device UI.
  */

@@ -66,7 +66,7 @@ const void *bootloader_mmap(uint32_t src_addr, uint32_t size)
     const void *result = NULL;
     uint32_t src_page = src_addr & ~(SPI_FLASH_MMU_PAGE_SIZE - 1);
     size += (src_addr - src_page);
-    esp_err_t err = spi_flash_mmap(src_page, size, SPI_FLASH_MMAP_DATA, &result, &map);
+    esp_err_t err = spi_flash_mmap(src_page, size, SPI_FLASH_MMAP_FLAG_DATA | SPI_FLASH_MMAP_FLAG_BLOCKS_WRITE, &result, &map);
     if (err != ESP_OK) {
         ESP_EARLY_LOGE(TAG, "spi_flash_mmap failed: 0x%x", err);
         return NULL;
@@ -123,16 +123,6 @@ esp_err_t bootloader_flash_erase_range(uint32_t start_addr, uint32_t size)
 #include "hal/mmu_ll.h"
 #include "hal/cache_hal.h"
 #include "hal/cache_ll.h"
-
-#if CONFIG_IDF_TARGET_ESP32S3
-#include "esp32s3/rom/opi_flash.h"
-#elif CONFIG_IDF_TARGET_ESP32P4
-#include "esp32p4/rom/opi_flash.h"
-#elif CONFIG_IDF_TARGET_ESP32C5
-#include "esp32c5/rom/opi_flash.h"
-#elif CONFIG_IDF_TARGET_ESP32C61
-#include "esp32c61/rom/opi_flash.h"
-#endif
 #include "esp_flash_chips/spi_flash_defs.h"
 
 #if ESP_TEE_BUILD
@@ -426,8 +416,8 @@ void bootloader_munmap(const void *mapping)
         mmu_hal_unmap_all();
 #else
         cache_hal_suspend(CACHE_LL_LEVEL_EXT_MEM, CACHE_TYPE_ALL);
-        mmu_hal_unmap_region(0, FLASH_MMAP_VADDR, current_mapped_size);
         cache_hal_invalidate_addr(FLASH_MMAP_VADDR, current_mapped_size);
+        mmu_hal_unmap_region(0, FLASH_MMAP_VADDR, current_mapped_size);
         cache_hal_resume(CACHE_LL_LEVEL_EXT_MEM, CACHE_TYPE_ALL);
 #endif
 #endif
@@ -699,7 +689,7 @@ void bootloader_flash_32bits_address_map_enable(esp_rom_spiflash_read_mode_t fla
         break;
     }
     cache_hal_disable(CACHE_LL_LEVEL_EXT_MEM, CACHE_TYPE_ALL);
-    esp_rom_opiflash_cache_mode_config(flash_mode, &cache_rd);
+    esp_rom_spiflash_cache_mode_config(flash_mode, &cache_rd);
     cache_hal_enable(CACHE_LL_LEVEL_EXT_MEM, CACHE_TYPE_ALL);
 }
 #endif
@@ -921,6 +911,12 @@ static IRAM_ATTR bool is_xmc_chip_strict(uint32_t rdid)
     uint32_t vendor_id = BYTESHIFT(rdid, 2);
     uint32_t mfid = BYTESHIFT(rdid, 1);
     uint32_t cpid = BYTESHIFT(rdid, 0);
+
+    // xmc vendor id begin with 0x46 means that it's a D-series chip
+    // which did not need the startup flow
+    if (vendor_id == 0x46) {
+        return true;
+    }
 
     if (vendor_id != XMC_VENDOR_ID_1) {
         return false;

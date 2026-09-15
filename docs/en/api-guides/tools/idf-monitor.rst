@@ -61,7 +61,7 @@ For easy interaction with IDF Monitor, use the keyboard shortcuts given in the t
      -
    * - Ctrl + C
      - Interrupt running application
-     - Pause IDF Monitor and runs GDB_ project debugger to debug the application at runtime. This requires :ref:`CONFIG_ESP_SYSTEM_GDBSTUB_RUNTIME` option to be enabled.
+     - Pause IDF Monitor and runs GDB_ project debugger to debug the application at runtime. This requires :menuitem:`CONFIG_ESP_SYSTEM_GDBSTUB_RUNTIME` option to be enabled.
 
 Any keys pressed, other than ``Ctrl-]`` and ``Ctrl-T``, will be sent through the serial port.
 
@@ -73,7 +73,7 @@ IDF Monitor automatically colors the output based on the log level. This feature
 
 The automatic coloring is enabled by default. To disable it, use the command line option ``--disable-auto-color``.
 
-The coloring is done based on the log level followed by optional timestamp and tag. For option to enable coloring on the {IDF_TARGET_NAME} side, see :ref:`CONFIG_LOG_COLORS`.
+The coloring is done based on the log level followed by optional timestamp and tag. For option to enable coloring on the {IDF_TARGET_NAME} side, see :menuitem:`CONFIG_LOG_COLORS`.
 
 For more details on the log, see :doc:`Logging <../../api-reference/system/log>`.
 
@@ -241,6 +241,13 @@ The ROM ELF file is automatically loaded from a location based on the ``IDF_PATH
 
     Set environment variable ``ESP_MONITOR_DECODE`` to ``0`` or call esp_idf_monitor with specific command line option: ``python -m esp_idf_monitor --disable-address-decoding`` to disable address decoding.
 
+.. _idf-monitor-target-detection:
+
+Automatic Target Detection
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+By default, ``idf.py monitor`` connects to the target that has been set for the project. However, on an unbuilt project where no target has been configured, it can connect to any target — it will automatically detect the chip on the default serial port and pass it to the monitor. This allows running ``idf.py monitor`` on a clean project without having to call ``idf.py set-target`` first.
+
 Target Reset on Connection
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -275,9 +282,9 @@ Launching GDB with GDBStub
 
 GDBStub is a useful runtime debugging feature that runs on the target and connects to the host over the serial port to receive debugging commands. GDBStub supports commands such as reading memory and variables, examining call stack frames etc. Although GDBStub is less versatile than JTAG debugging, it does not require any special hardware (such as a JTAG to USB bridge) as communication is done entirely over the serial port.
 
-A target can be configured to run GDBStub in the background by setting the :ref:`CONFIG_ESP_SYSTEM_GDBSTUB_RUNTIME`. GDBStub will run in the background until a ``Ctrl+C`` message is sent over the serial port and causes the GDBStub to break (i.e., stop the execution of) the program, thus allowing GDBStub to handle debugging commands.
+A target can be configured to run GDBStub in the background by setting the :menuitem:`CONFIG_ESP_SYSTEM_GDBSTUB_RUNTIME`. GDBStub will run in the background until a ``Ctrl+C`` message is sent over the serial port and causes the GDBStub to break (i.e., stop the execution of) the program, thus allowing GDBStub to handle debugging commands.
 
-Furthermore, the panic handler can be configured to run GDBStub on a crash by setting the :ref:`CONFIG_ESP_SYSTEM_PANIC` to ``GDBStub on panic``. When a crash occurs, GDBStub will output a special string pattern over the serial port to indicate that it is running.
+Furthermore, the panic handler can be configured to run GDBStub on a crash by setting the :menuitem:`CONFIG_ESP_SYSTEM_PANIC` to ``GDBStub on panic``. When a crash occurs, GDBStub will output a special string pattern over the serial port to indicate that it is running.
 
 In both cases (i.e., sending the ``Ctrl+C`` message, or receiving the special string pattern), IDF Monitor will automatically launch GDB in order to allow the user to send debugging commands. After GDB exits, the target is reset via the RTS serial line. If this line is not connected, users can reset their target (by pressing the board's Reset button).
 
@@ -361,6 +368,46 @@ Configuration File
 
 For more details on the configuration file, see the `IDF Monitor documentation`_.
 
+Host-side Command Markers
+=========================
+
+IDF Monitor can execute host-side helper commands when a device log line starts with a supported marker.
+
+For eFuse token decoding, print one of the following from firmware logs:
+
+* ``IDF_MONITOR_EXECUTE_ESPEFUSE_SUMMARY <TOKEN> [extra arguments]``
+* ``IDF_MONITOR_EXECUTE_ESPEFUSE_DUMP <TOKEN>``
+
+When a marker is detected, monitor invokes ``espefuse`` on the host and prints the decoded output inline.
+
+Example 1 (summary with custom table):
+
+.. code-block:: text
+
+  I (441) app: IDF_MONITOR_EXECUTE_ESPEFUSE_SUMMARY EFSR:esp32c3:100:... --extend-efuse-table main/esp_efuse_custom_table.csv
+
+This line triggers a host-side command equivalent to:
+
+.. code-block:: text
+
+  espefuse --token EFSR:esp32c3:100:... --extend-efuse-table main/esp_efuse_custom_table.csv summary --active
+
+Example 2 (raw dump):
+
+.. code-block:: text
+
+  I (442) app: IDF_MONITOR_EXECUTE_ESPEFUSE_DUMP EFSR:esp32c3:100:...
+
+This line triggers a host-side command equivalent to:
+
+.. code-block:: text
+
+  espefuse --token EFSR:esp32c3:100:... dump
+
+.. important::
+
+    Treat token payloads as sensitive data (especially ``EFSW``/``EFSRW``), because they can expose key values in plaintext while those values are still staged, not yet burned, and not yet read-protected. For token formats and generation APIs, see :doc:`eFuse Manager <../../api-reference/system/efuse>`.
+
 
 Known Issues with IDF Monitor
 =============================
@@ -369,7 +416,7 @@ The following issues are currently known:
 
 - Autocoloring cannot detect the log level if the message contains new lines. In this case, the IDF Monitor will only color the first line of the message.
 
-  To work around this issue, enable :ref:`CONFIG_LOG_COLORS` in menuconfig. Please note that this might have some impact on binary size and performance.
+  To work around this issue, enable :menuitem:`CONFIG_LOG_COLORS` in menuconfig. Please note that this might have some impact on binary size and performance.
 
 - On Windows, if the terminal is closed without first closing the IDF Monitor, some drivers may fail to release the serial port. To release the port, you may need to unplug and replug the USB cable, or in some cases even restart the computer. This issue has been observed with the CH9102 USB-to-UART bridge. Other drivers, such as CP210x and CH340, should work fine.
 
