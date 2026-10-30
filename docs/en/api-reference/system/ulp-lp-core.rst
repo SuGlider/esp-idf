@@ -117,7 +117,7 @@ During the build process, the following steps are taken to build ULP program:
 
     1. **Run each source file through the C compiler and assembler.** This step generates the object files ``.obj.c`` or ``.obj.S`` in the component build directory depending on the source file processed.
 
-    2. **Run the linker script template through the C preprocessor.** The template is located in ``components/ulp/ld`` directory.
+    2. **Run the linker script template through the C preprocessor.** The template is located in ``components/ulp/subproject/components/lp_core/ld`` directory.
 
     3. **Link the object files into an output ELF file** (``ulp_app_name.elf``). The Map file ``ulp_app_name.map`` generated at this stage may be useful for debugging purposes.
 
@@ -274,7 +274,7 @@ To enhance the capabilities of the ULP LP core coprocessor, it has access to per
 ULP LP Core Interrupts
 ----------------------
 
-The LP core coprocessor can be configured to handle interrupts from various sources. Examples of such interrupts could be LP IO low/high or LP timer interrupts. To register a handler for an interrupt, simply override any of the weak handlers provided by IDF. A complete list of handlers can be found in :component_file:`ulp_lp_core_interrupts.h <ulp/lp_core/lp_core/include/ulp_lp_core_interrupts.h>`. For details on which interrupts are available on a specific target, please consult **{IDF_TARGET_NAME} Technical Reference Manual** [`PDF <{IDF_TARGET_TRM_EN_URL}#ulp>`__].
+The LP core coprocessor can be configured to handle interrupts from various sources. Examples of such interrupts could be LP IO low/high or LP timer interrupts. To register a handler for an interrupt, simply override any of the weak handlers provided by IDF. A complete list of handlers can be found in :component_file:`ulp_lp_core_interrupts.h <ulp/subproject/components/lp_core/include/ulp_lp_core_interrupts.h>`. For details on which interrupts are available on a specific target, please consult **{IDF_TARGET_NAME} Technical Reference Manual** [`PDF <{IDF_TARGET_TRM_EN_URL}#ulp>`__].
 
 For example, to override the handler for the LP IO interrupt, you can define the following function in your ULP LP core code:
 
@@ -408,14 +408,14 @@ The default LP core linker script is assembled from three parts — a **base** p
 
 - **base** part — defines ``ENTRY``, the interrupt vector table, the HP/LP shared-memory section, the default stack top (``__stack_top``), the usable window bounds and the section-boundary macros below. This part is never replaced.
 - **layout** part — declares the memory regions and section placement within the window. It composes the macros so it never re-implements boot code. This is the part the LP Core application replaces.
-- **checks** part — provides the default ``__stack_size`` (computed as the free space between ``_lp_data_end`` and ``__stack_top``, once the layout has marked ``_lp_data_end``) and the link-time ``ASSERT`` statements that verify reset vectoring, that the image fits the reserved memory and that the stack stays within its bounds, failing the build with a clear message rather than an obscure linker error.
+- **checks** part — provides the default ``__stack_size`` (computed as the free space between ``_lp_data_end`` and ``__stack_top``, once the layout has marked ``_lp_data_end``) and the link-time ``ASSERT`` statements that verify the following: correct reset-vector placement, a fit between the image and the reserved memory, and a stack that stays within its bounds. If a check fails, the build fails with a clear message rather than an obscure linker error.
 
 A custom layout uses only the following:
 
-- ``LP_CORE_USER_MEMORY_REGION_START`` / ``LP_CORE_USER_MEMORY_REGION_END`` — the bounds of the free LP-RAM window. Declare regions and place sections only within it.
+- ``LP_CORE_USER_MEMORY_REGION_START``/``LP_CORE_USER_MEMORY_REGION_END`` — the bounds of the free LP-RAM window. Declare regions and place sections only within it.
 - ``LP_CORE_TEXT_START(region)`` — composed first, into a region that starts at ``LP_CORE_USER_MEMORY_REGION_START``. Places the reset vector and early handlers at the boot offset.
 - ``LP_CORE_TEXT_END()`` — composed after the last executable section.
-- ``LP_CORE_DATA_START()`` / ``LP_CORE_DATA_END()`` — composed around the writable data. ``LP_CORE_DATA_END()`` marks the end of writable data (``_lp_data_end``), which the base uses to size and bounds-check the stack, so a layout must compose it (or assign ``_lp_data_end`` itself).
+- ``LP_CORE_DATA_START()``/``LP_CORE_DATA_END()`` — composed around the writable data. ``LP_CORE_DATA_END()`` marks the end of writable data (``_lp_data_end``), which the base uses to size and bounds-check the stack, so a layout must compose it (or assign ``_lp_data_end`` itself).
 
 The macros carry any config-dependent handling for the layout, so a layout composes them the same way regardless of the active configuration. The vector table and the HP/LP shared-memory section are provided by the base part; a custom layout does not declare or place them. The stack window is provided for the layout as well: ``__stack_top`` defaults (in the base part) to the top of the window, and ``__stack_size`` (in the checks part, once ``_lp_data_end`` is known) to all the free space between ``_lp_data_end`` and ``__stack_top``. Both are weak defaults, so a layout that needs to reserve space at the top of the window — a stack guard band, for example — can override either.
 

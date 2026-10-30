@@ -63,6 +63,12 @@
 #define UC_BT_A2DP_SEP_NUM_MAX              1
 #endif
 
+#ifdef CONFIG_BT_A2DP_SINK_MAX_CONN
+#define UC_BT_A2DP_SINK_MAX_CONN            CONFIG_BT_A2DP_SINK_MAX_CONN
+#else
+#define UC_BT_A2DP_SINK_MAX_CONN            1
+#endif
+
 //AVRCP
 #ifdef CONFIG_BT_AVRCP_ENABLED
 #define UC_BT_AVRCP_ENABLED                 TRUE
@@ -166,13 +172,11 @@
 #define UC_BT_CLASSIC_BQB_ENABLED           FALSE
 #endif
 
-//Set Encryption Key Size(BT)
-#ifdef CONFIG_BT_ENC_KEY_SIZE_CTRL_STD
-#define UC_BT_ENC_KEY_SIZE_CTRL_MODE   1
-#elif CONFIG_BT_ENC_KEY_SIZE_CTRL_VSC
-#define UC_BT_ENC_KEY_SIZE_CTRL_MODE   2
+// Vendor-specific HCI for Classic Bluetooth encryption key size
+#ifdef CONFIG_BT_CLASSIC_ENABLE_ENC_KEY_SIZE_CTRL_VSC
+#define UC_BT_CLASSIC_ENABLE_ENC_KEY_SIZE_CTRL_VSC             CONFIG_BT_CLASSIC_ENABLE_ENC_KEY_SIZE_CTRL_VSC
 #else
-#define UC_BT_ENC_KEY_SIZE_CTRL_MODE   0
+#define UC_BT_CLASSIC_ENABLE_ENC_KEY_SIZE_CTRL_VSC             FALSE
 #endif
 
 //Enable Classic Bluetooth power control vsc
@@ -196,6 +200,25 @@
 #define UC_BT_PAN_ENABLED                   FALSE
 #endif
 
+//OPP
+#ifdef CONFIG_BT_OPP_ENABLED
+#define UC_BT_OPP_ENABLED                   CONFIG_BT_OPP_ENABLED
+#else
+#define UC_BT_OPP_ENABLED                   FALSE
+#endif
+
+#ifdef CONFIG_BT_OPP_SERVER_ENABLED
+#define UC_BT_OPP_SERVER_ENABLED            CONFIG_BT_OPP_SERVER_ENABLED
+#else
+#define UC_BT_OPP_SERVER_ENABLED            FALSE
+#endif
+
+#ifdef CONFIG_BT_OPP_CLIENT_ENABLED
+#define UC_BT_OPP_CLIENT_ENABLED            CONFIG_BT_OPP_CLIENT_ENABLED
+#else
+#define UC_BT_OPP_CLIENT_ENABLED            FALSE
+#endif
+
 #ifdef CONFIG_BT_PBAC_SUPPORTED_FEAT
 #define UC_BT_PBAC_SUPPORTED_FEAT           CONFIG_BT_PBAC_SUPPORTED_FEAT
 #else
@@ -213,6 +236,13 @@
 #define UC_BT_GOEPC_ENABLED           	    CONFIG_BT_GOEPC_ENABLED
 #else
 #define UC_BT_GOEPC_ENABLED           	    FALSE
+#endif
+
+//GOEPS (BT)
+#ifdef CONFIG_BT_GOEPS_ENABLED
+#define UC_BT_GOEPS_ENABLED           	    CONFIG_BT_GOEPS_ENABLED
+#else
+#define UC_BT_GOEPS_ENABLED           	    FALSE
 #endif
 
 //BLE
@@ -564,6 +594,12 @@
 #define UC_BT_SMP_ENABLE                       FALSE
 #endif
 
+#ifdef CONFIG_BT_SMP_CTKD_ENABLE
+#define UC_BT_SMP_CTKD_ENABLE                  CONFIG_BT_SMP_CTKD_ENABLE
+#else
+#define UC_BT_SMP_CTKD_ENABLE                  FALSE
+#endif
+
 //SMP_SLAVE_CON_PARAMS_UPD_ENABLE
 #ifdef CONFIG_BT_SMP_SLAVE_CON_PARAMS_UPD_ENABLE
 #define UC_BT_SMP_SLAVE_CON_PARAMS_UPD_ENABLE  CONFIG_BT_SMP_SLAVE_CON_PARAMS_UPD_ENABLE
@@ -905,6 +941,12 @@
 #define UC_BT_LOG_AVRC_TRACE_LEVEL          CONFIG_BT_LOG_AVRC_TRACE_LEVEL
 #else
 #define UC_BT_LOG_AVRC_TRACE_LEVEL          UC_TRACE_LEVEL_WARNING
+#endif
+
+#ifdef CONFIG_BT_LOG_GOEPS_TRACE_LEVEL
+#define UC_BT_LOG_GOEPS_TRACE_LEVEL         CONFIG_BT_LOG_GOEPS_TRACE_LEVEL
+#else
+#define UC_BT_LOG_GOEPS_TRACE_LEVEL         UC_TRACE_LEVEL_WARNING
 #endif
 
 #ifdef CONFIG_BT_LOG_MCA_TRACE_LEVEL

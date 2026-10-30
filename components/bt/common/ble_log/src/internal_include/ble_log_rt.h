@@ -12,7 +12,6 @@
 
 /* INCLUDE */
 #include "ble_log_prph.h"
-#include "ble_log_ts.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -24,6 +23,8 @@
 
 /* INTERFACE */
 bool ble_log_rt_init(void);
+/* Starts the always-on periodic path after the epoch INIT frame is queued. */
+bool ble_log_rt_start_periodic(void);
 void ble_log_rt_deinit(void);
 bool ble_log_rt_drain(void);
 void ble_log_rt_submit_trans(ble_log_prph_trans_t *trans);

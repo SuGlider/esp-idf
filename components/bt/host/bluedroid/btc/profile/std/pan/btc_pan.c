@@ -17,8 +17,74 @@
 
 #if (defined BTC_PAN_INCLUDED && BTC_PAN_INCLUDED == TRUE)
 
-static bool s_btc_pan_init = false;
-static esp_pan_cfg_t s_btc_pan_cfg;
+#if PAN_DYNAMIC_MEMORY == FALSE
+static btc_pan_local_param_t btc_pan_local_param;
+#else
+btc_pan_local_param_t *btc_pan_local_param_ptr = NULL;
+#endif
+
+static bool btc_pan_is_inited(void)
+{
+#if PAN_DYNAMIC_MEMORY == TRUE
+    if (btc_pan_local_param_ptr == NULL) {
+        return false;
+    }
+#endif
+    return btc_pan_local_param.inited;
+}
+
+static void btc_pan_conn_reset(void)
+{
+    for (int i = 0; i < BTA_PAN_NUM_CONN; i++) {
+        btc_pan_local_param.conn_hdl[i] = ESP_PAN_INVALID_HANDLE;
+    }
+}
+
+static void btc_pan_conn_add(uint16_t handle)
+{
+    int free_idx = -1;
+
+    if (handle == ESP_PAN_INVALID_HANDLE) {
+        return;
+    }
+
+    for (int i = 0; i < BTA_PAN_NUM_CONN; i++) {
+        if (btc_pan_local_param.conn_hdl[i] == handle) {
+            return;
+        }
+        if (free_idx < 0 && btc_pan_local_param.conn_hdl[i] == ESP_PAN_INVALID_HANDLE) {
+            free_idx = i;
+        }
+    }
+
+    if (free_idx >= 0) {
+        btc_pan_local_param.conn_hdl[free_idx] = handle;
+    } else {
+        BTC_TRACE_ERROR("%s: no free slot for handle 0x%x", __func__, handle);
+    }
+}
+
+static void btc_pan_conn_remove(uint16_t handle)
+{
+    for (int i = 0; i < BTA_PAN_NUM_CONN; i++) {
+        if (btc_pan_local_param.conn_hdl[i] == handle) {
+            btc_pan_local_param.conn_hdl[i] = ESP_PAN_INVALID_HANDLE;
+            return;
+        }
+    }
+}
+
+static uint8_t btc_pan_conn_num(void)
+{
+    uint8_t num = 0;
+
+    for (int i = 0; i < BTA_PAN_NUM_CONN; i++) {
+        if (btc_pan_local_param.conn_hdl[i] != ESP_PAN_INVALID_HANDLE) {
+            num++;
+        }
+    }
+    return num;
+}
 
 static esp_pan_status_t btc_pan_status_from_bta(tBTA_PAN_STATUS status)
 {
@@ -71,56 +137,56 @@ static void btc_pan_set_role(void)
     tBTA_PAN_ROLE_INFO gn_info = {0};
     tBTA_PAN_ROLE_INFO nap_info = {0};
 
-    if (s_btc_pan_cfg.role & ESP_PAN_ROLE_PANU) {
-        user_info.p_srv_name = s_btc_pan_cfg.panu_service_name;
+    if (btc_pan_local_param.cfg.role & ESP_PAN_ROLE_PANU) {
+        user_info.p_srv_name = btc_pan_local_param.cfg.panu_service_name;
         user_info.app_id = BTC_PAN_APP_ID_PANU;
-        user_info.sec_mask = s_btc_pan_cfg.panu_sec;
+        user_info.sec_mask = btc_pan_local_param.cfg.panu_sec;
     }
 
-    if (s_btc_pan_cfg.role & ESP_PAN_ROLE_GN) {
-        gn_info.p_srv_name = s_btc_pan_cfg.gn_service_name;
+    if (btc_pan_local_param.cfg.role & ESP_PAN_ROLE_GN) {
+        gn_info.p_srv_name = btc_pan_local_param.cfg.gn_service_name;
         gn_info.app_id = BTC_PAN_APP_ID_GN;
-        gn_info.sec_mask = s_btc_pan_cfg.gn_sec;
+        gn_info.sec_mask = btc_pan_local_param.cfg.gn_sec;
     }
 
-    if (s_btc_pan_cfg.role & ESP_PAN_ROLE_NAP) {
-        nap_info.p_srv_name = s_btc_pan_cfg.nap_service_name;
+    if (btc_pan_local_param.cfg.role & ESP_PAN_ROLE_NAP) {
+        nap_info.p_srv_name = btc_pan_local_param.cfg.nap_service_name;
         nap_info.app_id = BTC_PAN_APP_ID_NAP;
-        nap_info.sec_mask = s_btc_pan_cfg.nap_sec;
+        nap_info.sec_mask = btc_pan_local_param.cfg.nap_sec;
     }
 
-    BTA_PanSetRole((tBTA_PAN_ROLE)s_btc_pan_cfg.role, &user_info, &gn_info, &nap_info);
+    BTA_PanSetRole((tBTA_PAN_ROLE)btc_pan_local_param.cfg.role, &user_info, &gn_info, &nap_info);
 }
 
-static void btc_pan_free_cfg_strings(void)
+void btc_pan_free_cfg_strings(void)
 {
-    if (s_btc_pan_cfg.panu_service_name) {
-        osi_free((void *)s_btc_pan_cfg.panu_service_name);
-        s_btc_pan_cfg.panu_service_name = NULL;
+    if (btc_pan_local_param.cfg.panu_service_name) {
+        osi_free((void *)btc_pan_local_param.cfg.panu_service_name);
+        btc_pan_local_param.cfg.panu_service_name = NULL;
     }
-    if (s_btc_pan_cfg.gn_service_name) {
-        osi_free((void *)s_btc_pan_cfg.gn_service_name);
-        s_btc_pan_cfg.gn_service_name = NULL;
+    if (btc_pan_local_param.cfg.gn_service_name) {
+        osi_free((void *)btc_pan_local_param.cfg.gn_service_name);
+        btc_pan_local_param.cfg.gn_service_name = NULL;
     }
-    if (s_btc_pan_cfg.nap_service_name) {
-        osi_free((void *)s_btc_pan_cfg.nap_service_name);
-        s_btc_pan_cfg.nap_service_name = NULL;
+    if (btc_pan_local_param.cfg.nap_service_name) {
+        osi_free((void *)btc_pan_local_param.cfg.nap_service_name);
+        btc_pan_local_param.cfg.nap_service_name = NULL;
     }
 }
 
 static void btc_pan_store_cfg(const esp_pan_cfg_t *cfg)
 {
     btc_pan_free_cfg_strings();
-    s_btc_pan_cfg = *cfg;
+    btc_pan_local_param.cfg = *cfg;
 
     if (cfg->panu_service_name) {
         size_t len = strlen(cfg->panu_service_name) + 1;
         char *name = (char *)osi_malloc(len);
         if (name) {
             memcpy(name, cfg->panu_service_name, len);
-            s_btc_pan_cfg.panu_service_name = name;
+            btc_pan_local_param.cfg.panu_service_name = name;
         } else {
-            s_btc_pan_cfg.panu_service_name = NULL;
+            btc_pan_local_param.cfg.panu_service_name = NULL;
         }
     }
     if (cfg->gn_service_name) {
@@ -128,9 +194,9 @@ static void btc_pan_store_cfg(const esp_pan_cfg_t *cfg)
         char *name = (char *)osi_malloc(len);
         if (name) {
             memcpy(name, cfg->gn_service_name, len);
-            s_btc_pan_cfg.gn_service_name = name;
+            btc_pan_local_param.cfg.gn_service_name = name;
         } else {
-            s_btc_pan_cfg.gn_service_name = NULL;
+            btc_pan_local_param.cfg.gn_service_name = NULL;
         }
     }
     if (cfg->nap_service_name) {
@@ -138,16 +204,26 @@ static void btc_pan_store_cfg(const esp_pan_cfg_t *cfg)
         char *name = (char *)osi_malloc(len);
         if (name) {
             memcpy(name, cfg->nap_service_name, len);
-            s_btc_pan_cfg.nap_service_name = name;
+            btc_pan_local_param.cfg.nap_service_name = name;
         } else {
-            s_btc_pan_cfg.nap_service_name = NULL;
+            btc_pan_local_param.cfg.nap_service_name = NULL;
         }
     }
 }
 
 static void btc_pan_init(const esp_pan_cfg_t *cfg)
 {
-    if (s_btc_pan_init) {
+#if PAN_DYNAMIC_MEMORY == TRUE
+    if (btc_pan_local_param_ptr == NULL) {
+        esp_pan_cb_param_t param = {
+            .init.status = ESP_PAN_NO_RESOURCE,
+        };
+        btc_pan_cb_to_app(ESP_PAN_INIT_EVT, &param);
+        return;
+    }
+#endif
+
+    if (btc_pan_is_inited()) {
         esp_pan_cb_param_t param = {
             .init.status = ESP_PAN_NEED_DEINIT,
         };
@@ -164,13 +240,14 @@ static void btc_pan_init(const esp_pan_cfg_t *cfg)
     }
 
     btc_pan_store_cfg(cfg);
-    s_btc_pan_init = true;
+    btc_pan_conn_reset();
+    btc_pan_local_param.inited = true;
     BTA_PanEnable(bte_pan_evt);
 }
 
 static void btc_pan_deinit(void)
 {
-    if (!s_btc_pan_init) {
+    if (!btc_pan_is_inited()) {
         esp_pan_cb_param_t param = {
             .deinit.status = ESP_PAN_NEED_INIT,
         };
@@ -178,10 +255,11 @@ static void btc_pan_deinit(void)
         return;
     }
 
-    s_btc_pan_init = false;
+    btc_pan_local_param.inited = false;
     BTA_PanDisable();
+    btc_pan_conn_reset();
     btc_pan_free_cfg_strings();
-    memset(&s_btc_pan_cfg, 0, sizeof(s_btc_pan_cfg));
+    memset(&btc_pan_local_param.cfg, 0, sizeof(btc_pan_local_param.cfg));
 
     esp_pan_cb_param_t param = {
         .deinit.status = ESP_PAN_SUCCESS,
@@ -191,7 +269,7 @@ static void btc_pan_deinit(void)
 
 static void btc_pan_connect(btc_pan_args_t *arg)
 {
-    if (!s_btc_pan_init) {
+    if (!btc_pan_is_inited()) {
         esp_pan_cb_param_t param = {
             .open.status = ESP_PAN_NEED_INIT,
         };
@@ -206,7 +284,7 @@ static void btc_pan_connect(btc_pan_args_t *arg)
 
 static void btc_pan_disconnect(uint16_t handle)
 {
-    if (!s_btc_pan_init) {
+    if (!btc_pan_is_inited()) {
         return;
     }
 
@@ -220,7 +298,7 @@ static void btc_pan_write(btc_pan_args_t *arg)
         .write.status = ESP_PAN_SUCCESS,
     };
 
-    if (!s_btc_pan_init) {
+    if (!btc_pan_is_inited()) {
         param.write.status = ESP_PAN_NEED_INIT;
         btc_pan_cb_to_app(ESP_PAN_WRITE_EVT, &param);
         return;
@@ -240,19 +318,20 @@ static void btc_pan_write(btc_pan_args_t *arg)
 
 static void btc_pan_set_protocol_filters(btc_pan_args_t *arg)
 {
-    if (!s_btc_pan_init ||
+    if (!btc_pan_is_inited() ||
             (arg->set_pfilter.num_filters > 0 &&
             (arg->set_pfilter.start_array == NULL || arg->set_pfilter.end_array == NULL))) {
         return;
     }
 
     bta_pan_ci_set_pfilters(arg->set_pfilter.handle, arg->set_pfilter.num_filters,
-                            arg->set_pfilter.start_array, arg->set_pfilter.end_array);
+                            (UINT16 *)arg->set_pfilter.start_array,
+                            (UINT16 *)arg->set_pfilter.end_array);
 }
 
 static void btc_pan_set_multicast_filters(btc_pan_args_t *arg)
 {
-    if (!s_btc_pan_init ||
+    if (!btc_pan_is_inited() ||
             (arg->set_mfilter.num_filters > 0 &&
             (arg->set_mfilter.start_array == NULL || arg->set_mfilter.end_array == NULL))) {
         return;
@@ -316,41 +395,37 @@ void btc_pan_arg_deep_copy(btc_msg_t *msg, void *p_dest, void *p_src)
     case BTC_PAN_ACT_SET_PFILTER:
         if (src->set_pfilter.num_filters > 0) {
             size_t size = src->set_pfilter.num_filters * sizeof(uint16_t);
-            dst->set_pfilter.start_array = (uint16_t *)osi_malloc(size);
-            dst->set_pfilter.end_array = (uint16_t *)osi_malloc(size);
-            if (dst->set_pfilter.start_array && dst->set_pfilter.end_array) {
-                memcpy(dst->set_pfilter.start_array, src->set_pfilter.start_array, size);
-                memcpy(dst->set_pfilter.end_array, src->set_pfilter.end_array, size);
+            uint16_t *start_array = (uint16_t *)osi_malloc(size);
+            uint16_t *end_array = (uint16_t *)osi_malloc(size);
+            if (start_array && end_array) {
+                memcpy(start_array, src->set_pfilter.start_array, size);
+                memcpy(end_array, src->set_pfilter.end_array, size);
+                dst->set_pfilter.start_array = start_array;
+                dst->set_pfilter.end_array = end_array;
             } else {
-                if (dst->set_pfilter.start_array) {
-                    osi_free(dst->set_pfilter.start_array);
-                    dst->set_pfilter.start_array = NULL;
-                }
-                if (dst->set_pfilter.end_array) {
-                    osi_free(dst->set_pfilter.end_array);
-                    dst->set_pfilter.end_array = NULL;
-                }
+                osi_free(start_array);
+                osi_free(end_array);
+                dst->set_pfilter.start_array = NULL;
+                dst->set_pfilter.end_array = NULL;
                 dst->set_pfilter.num_filters = 0;
             }
         }
         break;
     case BTC_PAN_ACT_SET_MFILTER:
         if (src->set_mfilter.num_filters > 0) {
-            size_t size = src->set_mfilter.num_filters * sizeof(esp_bd_addr_t);
-            dst->set_mfilter.start_array = (esp_bd_addr_t *)osi_malloc(size);
-            dst->set_mfilter.end_array = (esp_bd_addr_t *)osi_malloc(size);
-            if (dst->set_mfilter.start_array && dst->set_mfilter.end_array) {
-                memcpy(dst->set_mfilter.start_array, src->set_mfilter.start_array, size);
-                memcpy(dst->set_mfilter.end_array, src->set_mfilter.end_array, size);
+            size_t size = src->set_mfilter.num_filters * sizeof(esp_pan_mac_addr_t);
+            esp_pan_mac_addr_t *start_array = (esp_pan_mac_addr_t *)osi_malloc(size);
+            esp_pan_mac_addr_t *end_array = (esp_pan_mac_addr_t *)osi_malloc(size);
+            if (start_array && end_array) {
+                memcpy(start_array, src->set_mfilter.start_array, size);
+                memcpy(end_array, src->set_mfilter.end_array, size);
+                dst->set_mfilter.start_array = start_array;
+                dst->set_mfilter.end_array = end_array;
             } else {
-                if (dst->set_mfilter.start_array) {
-                    osi_free(dst->set_mfilter.start_array);
-                    dst->set_mfilter.start_array = NULL;
-                }
-                if (dst->set_mfilter.end_array) {
-                    osi_free(dst->set_mfilter.end_array);
-                    dst->set_mfilter.end_array = NULL;
-                }
+                osi_free(start_array);
+                osi_free(end_array);
+                dst->set_mfilter.start_array = NULL;
+                dst->set_mfilter.end_array = NULL;
                 dst->set_mfilter.num_filters = 0;
             }
         }
@@ -387,21 +462,21 @@ void btc_pan_arg_deep_free(btc_msg_t *msg)
         break;
     case BTC_PAN_ACT_SET_PFILTER:
         if (arg->set_pfilter.start_array) {
-            osi_free(arg->set_pfilter.start_array);
+            osi_free((void *)arg->set_pfilter.start_array);
             arg->set_pfilter.start_array = NULL;
         }
         if (arg->set_pfilter.end_array) {
-            osi_free(arg->set_pfilter.end_array);
+            osi_free((void *)arg->set_pfilter.end_array);
             arg->set_pfilter.end_array = NULL;
         }
         break;
     case BTC_PAN_ACT_SET_MFILTER:
         if (arg->set_mfilter.start_array) {
-            osi_free(arg->set_mfilter.start_array);
+            osi_free((void *)arg->set_mfilter.start_array);
             arg->set_mfilter.start_array = NULL;
         }
         if (arg->set_mfilter.end_array) {
-            osi_free(arg->set_mfilter.end_array);
+            osi_free((void *)arg->set_mfilter.end_array);
             arg->set_mfilter.end_array = NULL;
         }
         break;
@@ -487,6 +562,14 @@ void btc_pan_cb_deep_free(btc_msg_t *msg)
     }
 }
 
+void btc_pan_get_profile_status(esp_pan_profile_status_t *param)
+{
+    param->pan_inited = btc_pan_is_inited();
+    if (btc_pan_is_inited()) {
+        param->conn_num = btc_pan_conn_num();
+    }
+}
+
 void btc_pan_call_handler(btc_msg_t *msg)
 {
     btc_pan_args_t *arg = (btc_pan_args_t *)msg->arg;
@@ -529,13 +612,13 @@ void btc_pan_cb_handler(btc_msg_t *msg)
     switch (msg->act) {
     case BTA_PAN_ENABLE_EVT:
         /* Ignore stale enable completion after esp_pan_deinit(). */
-        if (!s_btc_pan_init) {
+        if (!btc_pan_is_inited()) {
             break;
         }
         btc_pan_set_role();
         break;
     case BTA_PAN_SET_ROLE_EVT:
-        if (!s_btc_pan_init) {
+        if (!btc_pan_is_inited()) {
             break;
         }
         param.init.status = btc_pan_status_from_bta(p_data->set_role.status);
@@ -555,9 +638,15 @@ void btc_pan_cb_handler(btc_msg_t *msg)
         param.open.local_role = (esp_pan_role_t)p_data->open.local_role;
         param.open.peer_role = (esp_pan_role_t)p_data->open.peer_role;
         memcpy(param.open.remote_bda, p_data->open.bd_addr, ESP_BD_ADDR_LEN);
+        if (btc_pan_is_inited() && param.open.status == ESP_PAN_SUCCESS) {
+            btc_pan_conn_add(param.open.handle);
+        }
         btc_pan_cb_to_app(ESP_PAN_OPEN_EVT, &param);
         break;
     case BTA_PAN_CLOSE_EVT:
+        if (btc_pan_is_inited()) {
+            btc_pan_conn_remove(p_data->close.handle);
+        }
         param.close.handle = p_data->close.handle;
         btc_pan_cb_to_app(ESP_PAN_CLOSE_EVT, &param);
         break;
@@ -585,8 +674,8 @@ void btc_pan_co_data_ind(UINT16 handle, BD_ADDR src, BD_ADDR dst, UINT16 protoco
     esp_pan_cb_param_t param = {0};
 
     param.data_ind.handle = handle;
-    memcpy(param.data_ind.src, src, ESP_BD_ADDR_LEN);
-    memcpy(param.data_ind.dst, dst, ESP_BD_ADDR_LEN);
+    memcpy(param.data_ind.src, src, ESP_PAN_MAC_ADDR_LEN);
+    memcpy(param.data_ind.dst, dst, ESP_PAN_MAC_ADDR_LEN);
     param.data_ind.protocol = protocol;
     param.data_ind.len = len;
     param.data_ind.data = p_data;

@@ -3,6 +3,28 @@
 
 :link_to_translation:`en:[English]`
 
+FreeRTOS
+--------
+
+旧版 ``port_start_app_hook`` 已弃用，并将在 ESP-IDF v7.0 中移除。为保持原有执行顺序，请使用优先级为 ``999`` 的 ``ESP_PRE_SCHEDULER_HANDLER_REGISTER`` 处理函数替代。
+
+.. code-block:: c
+
+    #include "esp_private/esp_sys_event_app_init.h"
+
+    ESP_PRE_SCHEDULER_HANDLER_REGISTER(port_start_app_hook, 999)
+    {
+        // 特定于端口的启动行为
+        return ESP_OK;
+    }
+
+睡眠
+----
+
+睡眠及低功耗相关代码（``esp_sleep.h``、Light-sleep 和 Deep-sleep、睡眠保留等）已从 ``esp_hw_support`` 组件移至新的 ``esp_sleep`` 组件。API 保持不变，且 ``esp_hw_support`` 已将 ``esp_sleep`` 列为公共依赖项，因此现有项目无需修改。使用睡眠 API 的新组件应将 ``esp_sleep`` 添加到 ``REQUIRES`` 或 ``PRIV_REQUIRES`` 中。
+
+睡眠相关的 Kconfig 选项（``CONFIG_ESP_SLEEP_*``）名称保持不变，但其菜单已从 *Component config* > *Hardware Settings* > *Sleep Config* 移至 *Component config* > *Sleep Config*。
+
 OTA 更新
 --------
 

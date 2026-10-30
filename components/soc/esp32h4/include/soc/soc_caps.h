@@ -75,9 +75,10 @@
 #define SOC_FLASH_ENC_SUPPORTED         1
 #define SOC_SECURE_BOOT_SUPPORTED       0
 #define SOC_BOD_SUPPORTED               1
+#define SOC_VDDBAT_PROTECT_SUPPORTED    1
 // #define SOC_APM_SUPPORTED               1    // TODO: [ESP32H4] IDF-12256
 #define SOC_RISCV_TRACE_SUPPORTED       1
-#define SOC_PMU_SUPPORTED               1    // TODO: [ESP32H4] IDF-12286
+#define SOC_PMU_SUPPORTED               1
 #define SOC_PAU_SUPPORTED               1
 #define SOC_RTC_TIMER_SUPPORTED         1
 #define SOC_LP_AON_SUPPORTED            1
@@ -152,6 +153,8 @@
 /*-------------------------- CACHE CAPS --------------------------------------*/
 #define SOC_CACHE_WRITEBACK_SUPPORTED           1
 #define SOC_CACHE_FREEZE_SUPPORTED              1
+#define SOC_CACHE_CNT_SUPPORTED                 1
+#define SOC_CACHE_CNT_UNITS_NUM                 4   //Number of cache profile counter units
 
 /*-------------------------- CPU CAPS ----------------------------------------*/
 #define SOC_CPU_CORES_NUM               (2U)
@@ -191,6 +194,7 @@
 #define SOC_AHB_GDMA_VERSION                2
 #define SOC_GDMA_SUPPORT_ETM                1  // Support ETM submodule
 #define SOC_GDMA_SUPPORT_SLEEP_RETENTION    1
+#define SOC_GDMA_SUPPORT_WEIGHTED_ARBITRATION   1
 
 /*-------------------------- MODEM CAPS --------------------------------------*/
 #define SOC_MODEM_SUPPORT_ETM               1
@@ -206,6 +210,7 @@
 
 #define SOC_GPIO_SUPPORT_PIN_GLITCH_FILTER 1
 #define SOC_GPIO_FLEX_GLITCH_FILTER_NUM    8
+#define SOC_GPIO_SUPPORT_PIN_HYS_FILTER    1
 
 // GPIO peripheral has the ETM extension
 #define SOC_GPIO_SUPPORT_ETM          1
@@ -352,6 +357,7 @@
 #define SOC_SHA_SUPPORT_SHA384          (1)
 #define SOC_SHA_SUPPORT_SHA512          (1)
 #define SOC_SHA_SUPPORT_SHA512_T        (1)
+#define SOC_SHA_SUPPORT_SM3             (1)
 
 /*--------------------------- ECC CAPS ---------------------------------------*/
 #define SOC_ECC_CONSTANT_TIME_POINT_MUL           1
@@ -411,8 +417,10 @@
 #define SOC_EFUSE_DIS_PAD_JTAG 1
 #define SOC_EFUSE_DIS_USB_JTAG 1
 #define SOC_EFUSE_DIS_DIRECT_BOOT 1
-#define SOC_EFUSE_SOFT_DIS_JTAG 0
+#define SOC_EFUSE_SOFT_DIS_JTAG 1
 #define SOC_EFUSE_DIS_ICACHE 0
+/* Capability to disable the MSPI access in download mode */
+#define SOC_EFUSE_DIS_DOWNLOAD_MSPI 1
 #define SOC_EFUSE_BLOCK9_KEY_PURPOSE_QUIRK 1  // XTS-AES key purpose not supported for this block
 #define SOC_EFUSE_ECDSA_KEY 1
 #define SOC_EFUSE_ECDSA_KEY_P192 1
@@ -473,12 +481,11 @@
 /*--------------- PHY REGISTER AND MEMORY SIZE CAPS --------------------------*/
 #define SOC_PHY_DIG_REGS_MEM_SIZE       (21*4)
 
-// TODO: IDF-12286 (inherit from verify code, need check)
 /*-------------------------- Power Management CAPS ----------------------------*/
 #define SOC_PM_SUPPORT_BT_WAKEUP        (1)
 #define SOC_PM_SUPPORT_EXT1_WAKEUP      (1)
 #define SOC_PM_SUPPORT_EXT1_WAKEUP_MODE_PER_PIN   (1) /*!<Supports one bit per pin to configure the EXT1 trigger level */
-#define SOC_PM_SUPPORT_TOUCH_WAKEUP     (1)
+#define SOC_PM_SUPPORT_TOUCH_SENSOR_WAKEUP    (1)     /*!<Supports waking up from touch pad trigger */
 #define SOC_PM_SUPPORT_CPU_PD           (1)
 #define SOC_PM_SUPPORT_MODEM_PD         (1)
 #define SOC_PM_SUPPORT_XTAL32K_PD       (1)
@@ -490,9 +497,11 @@
 #define SOC_PM_SUPPORT_MAC_BB_PD        (1)
 #define SOC_PM_SUPPORT_RTC_PERIPH_PD    (1)
 
-// #define SOC_PM_SUPPORT_PMU_MODEM_STATE  (1)
+#define SOC_PM_SUPPORT_REGDMA_TRIGGERED_PHY (1)
+#define SOC_PM_SUPPORT_PMU_MODEM_STATE  (1)
 // /* macro redefine for pass esp_wifi headers md5sum check */
 // #define MAC_SUPPORT_PMU_MODEM_STATE     SOC_PM_SUPPORT_PMU_MODEM_STATE
+#define SOC_PM_REGDMA_MODEM_LINK_PROTECT    (1)
 
 #define SOC_PM_SUPPORT_PMU_CLK_ICG          (1)
 #define SOC_PM_SUPPORT_PMU_RETENTION_CLK_ICG   (1)
@@ -503,8 +512,10 @@
 #define SOC_PM_MODEM_RETENTION_BY_REGDMA    (1)
 #define SOC_EXT_MEM_CACHE_TAG_IN_CPU_DOMAIN (1)
 
-#define SOC_PM_PAU_LINK_NUM                 (4)
+#define SOC_PM_PAU_LINK_NUM                 (5)
 #define SOC_PM_PAU_REGDMA_LINK_CONFIGURABLE (1)
+#define SOC_PM_RETENTION_MODULE_NUM         (64)
+#define SOC_PM_PAU_REGDMA_LINK_IDX_PHY      (4) // The range of values for the link index is [0, SOC_PM_PAU_LINK_NUM)
 
 #define SOC_PM_TOP_DEPENDS_ON_RTC_PERIPH    (1) // In ESP32H4, RTC_PERIPH should be pd only together with TOP, otherwise there is some current leak.
 #define SOC_PM_BBPLL_PD_IN_MODEM_STATE      (1)

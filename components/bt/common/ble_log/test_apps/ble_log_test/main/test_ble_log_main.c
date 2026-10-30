@@ -10,7 +10,7 @@
 #include "unity_test_runner.h"
 
 #include "ble_log.h"
-#include "ble_log_lbm.h"
+#include "ble_log_lbm_v2.h"
 #include "test_ble_log_main.h"
 
 bool test_ble_log_walk_frames(const uint8_t *data, size_t len,
@@ -36,7 +36,7 @@ bool test_ble_log_walk_frames(const uint8_t *data, size_t len,
 
         if (observer) {
             test_ble_log_frame_t frame = {
-                .src = head.frame_meta & 0xff,
+                .src = (ble_log_src_t)(head.frame_meta & 0xff),
                 .sn = head.frame_meta >> 8,
                 .payload = data + offset + BLE_LOG_FRAME_HEAD_LEN,
                 .payload_len = head.length,
@@ -54,6 +54,13 @@ void setUp(void)
 
 void tearDown(void)
 {
+    /* Unity aborts a case by longjmp, so an armed test hook would fire in
+     * the NEXT case (its time gate was set in a dead stack frame and is
+     * long since passed). Disarm every hook the bounded-wait cases arm so
+     * a failed assert cannot leak it across cases. The hook state lives
+     * in test_ble_log_rt.c next to its cases. */
+    extern void test_ble_log_disarm_case_hooks(void);
+    test_ble_log_disarm_case_hooks();
 }
 
 void app_main(void)

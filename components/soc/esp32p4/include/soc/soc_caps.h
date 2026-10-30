@@ -174,6 +174,8 @@
 #define SOC_SHARED_IDCACHE_SUPPORTED            1   //Shared Cache for both instructions and data
 #define SOC_CACHE_WRITEBACK_SUPPORTED           1
 #define SOC_CACHE_FREEZE_SUPPORTED              1
+#define SOC_CACHE_CNT_SUPPORTED                 1
+#define SOC_CACHE_CNT_UNITS_NUM                 6   //Number of cache profile counter units
 #define SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE      1
 
 /*-------------------------- CPU CAPS ----------------------------------------*/
@@ -230,6 +232,7 @@
 #define SOC_GDMA_SUPPORT_CRC                1
 #define SOC_GDMA_SUPPORT_ETM                1
 #define SOC_GDMA_SUPPORT_SLEEP_RETENTION    1
+#define SOC_GDMA_SUPPORT_WEIGHTED_ARBITRATION   1
 
 /*-------------------------- GPIO CAPS ---------------------------------------*/
 // ESP32-P4 has 1 GPIO peripheral
@@ -424,6 +427,7 @@
 // USB OTG Caps
 #define SOC_USB_OTG_PERIPH_NUM          (2U)
 #define SOC_USB_FSLS_PHY_NUM            (1U)
+#define SOC_USB_OTG_PSRAM_DMA_CAPABLE   (1)                 /*!< USB OTG Peripheral's internal DMA can access PSRAM */
 #define SOC_USB_OTG_NEED_SOFTWARE_SUSPEND_BEFORE_SLEEP (1)
 
 // USB PHY Caps
@@ -496,7 +500,7 @@
 #define SOC_ECDSA_SUPPORT_EXPORT_PUBKEY     (1)
 #define SOC_ECDSA_SUPPORT_DETERMINISTIC_MODE   (1)
 #define SOC_ECDSA_SUPPORT_HW_DETERMINISTIC_LOOP (1)
-#define SOC_ECDSA_USES_MPI                  (1)
+#define SOC_ECDSA_USES_MPI                  (1)  /*!< ECDSA shares MPI's reset domain, so the MPI lock is required even though ECDSA uses neither the MPI engine nor its memory */
 #define SOC_ECDSA_SUPPORT_CURVE_P384 (1)
 #define SOC_ECDSA_SUPPORT_CURVE_SPECIFIC_KEY_PURPOSES (1)  /*!< Support individual key purposes for different ECDSA curves (P192, P256, P384) */
 

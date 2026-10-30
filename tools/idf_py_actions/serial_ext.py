@@ -108,6 +108,7 @@ def action_extensions(base_actions: dict, project_path: str) -> dict:
         timestamp_format: str,
         force_color: bool,
         disable_auto_color: bool,
+        command_file: str | None,
     ) -> None:
         if print_filter:
             monitor_args += ['--print_filter', print_filter]
@@ -125,20 +126,32 @@ def action_extensions(base_actions: dict, project_path: str) -> dict:
             monitor_args += ['--disable-auto-color']
         hints = not args.no_hints and os.path.isdir(args.build_dir)
 
-        # Temporally ignore SIGINT, which is used in idf_monitor to spawn gdb.
+        # The monitor spawns gdb on a gdbstub panic and Ctrl+C then belongs to gdb, so
+        # idf.py must not exit before the monitor. Install a handler, not SIG_IGN, which
+        # is inherited by the monitor and would disable Ctrl+C in command-stream
+        # mode, where the monitor has no exit key and relies on SIGINT to stop.
         old_handler = signal.getsignal(signal.SIGINT)
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, lambda *_: None)
+        # Redirect the command file to monitor stdin so esp-idf-monitor enters
+        # command-stream mode (it selects that mode when stdin is not a TTY).
+        command_stream = open(command_file, 'rb') if command_file else None
         try:
+            # Run from the directory idf.py was invoked in: the idf.py command handed to the
+            # monitor to re-run (on a rebuild or flash request) is relative to it, as is any
+            # relative path in it such as -C, -B or an @file argument.
             RunTool(
                 'idf_monitor',
                 monitor_args,
-                args.project_dir,
+                os.getcwd(),
                 build_dir=args.build_dir,
                 hints=hints,
                 interactive=True,
                 convert_output=True,
+                stdin=command_stream,
             )()
         finally:
+            if command_stream is not None:
+                command_stream.close()
             signal.signal(signal.SIGINT, old_handler)
 
     def monitor(
@@ -153,6 +166,7 @@ def action_extensions(base_actions: dict, project_path: str) -> dict:
         timestamp_format: str,
         force_color: bool,
         disable_auto_color: bool,
+        command_file: str | None,
     ) -> None:
         """
         Run esp_idf_monitor to watch build output
@@ -189,6 +203,7 @@ def action_extensions(base_actions: dict, project_path: str) -> dict:
                 timestamp_format,
                 force_color,
                 disable_auto_color,
+                command_file,
             )
             return
 
@@ -246,7 +261,11 @@ def action_extensions(base_actions: dict, project_path: str) -> dict:
             monitor_args.extend(elf_list)
 
         idf_py = [PYTHON] + _get_commandline_options(ctx)  # commands to re-run idf.py
-        monitor_args += ['-m', ' '.join(f"'{a}'" for a in idf_py)]
+        # Pin the project the monitor is attached to. These directories are already resolved
+        # (including a build-file container), so they must come last: an earlier -C/-B would
+        # otherwise override them. The monitor appends the target (flash, app-flash, ...) after this.
+        idf_py += ['-C', args.project_dir, '-B', args.build_dir]
+        monitor_args += ['-m', shlex.join(idf_py)]
 
         _run_monitor(
             monitor_args,
@@ -258,6 +277,7 @@ def action_extensions(base_actions: dict, project_path: str) -> dict:
             timestamp_format,
             force_color,
             disable_auto_color,
+            command_file,
         )
 
     def flash(
@@ -1238,6 +1258,17 @@ def action_extensions(base_actions: dict, project_path: str) -> dict:
                         'names': ['--disable-auto-color'],
                         'is_flag': True,
                         'help': 'Disable auto coloring logs',
+                    },
+                    {
+                        'names': ['-c', '--command-file'],
+                        'type': click.Path(exists=True, dir_okay=False, readable=True),
+                        'default': None,
+                        'help': (
+                            'Run IDF Monitor in command-stream mode, reading line-based commands from FILE '
+                            '(empty lines and lines starting with # are ignored). '
+                            'See the IDF Monitor documentation for the list of commands '
+                            '(reset, expect, send, sleep, exit, and others).'
+                        ),
                     },
                 ],
                 'order_dependencies': [

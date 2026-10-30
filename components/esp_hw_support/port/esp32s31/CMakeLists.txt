@@ -11,8 +11,12 @@ if(NOT BOOTLOADER_BUILD)
     list(APPEND srcs "sar_periph_ctrl.c"
                      "pmu_param.c"
                      "pmu_init.c"
-                     "pmu_sleep.c"
+                     "ocode_init.c"
         )
+endif()
+
+if(NOT BOOTLOADER_BUILD AND CONFIG_ESP_ENABLE_PVT)
+    list(APPEND srcs "pmu_pvt.c")
 endif()
 
 add_prefix(srcs "${CMAKE_CURRENT_LIST_DIR}/" "${srcs}")

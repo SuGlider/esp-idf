@@ -10,7 +10,7 @@
 #include "unity_test_runner.h"
 
 #include "ble_log.h"
-#include "ble_log_lbm.h"
+#include "ble_log_lbm_v2.h"
 #include "ble_log_prph_test.h"
 #include "test_ble_log_main.h"
 
@@ -37,7 +37,7 @@ bool test_ble_log_walk_frames(const uint8_t *data, size_t len,
 
         if (observer) {
             test_ble_log_frame_t frame = {
-                .src = head.frame_meta & 0xff,
+                .src = (ble_log_src_t)(head.frame_meta & 0xff),
                 .sn = head.frame_meta >> 8,
                 .payload = data + offset + BLE_LOG_FRAME_HEAD_LEN,
                 .payload_len = head.length,
@@ -56,9 +56,9 @@ void setUp(void)
 void tearDown(void)
 {
     ble_log_prph_test_set_auto_recycle_hook(NULL, NULL);
-#if CONFIG_BLE_LOG_TS_ENABLED
-    (void)ble_log_sync_enable(false);
-#endif
+    /* Unity aborts a failed case by longjmp, which skips the restore
+     * statement at the end of the case, so the hook is also disarmed here. */
+    test_ble_log_disarm_warning_hook();
 }
 
 void app_main(void)

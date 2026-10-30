@@ -8,17 +8,13 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "esp_attr.h"
 #include "esp_clk_tree.h"
 #include "soc/soc_caps.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-typedef struct {
-    soc_module_clk_t clk_upstream;
-    uint32_t divider;
-} esp_clk_tree_src_config_t;
 
 #if SOC_CLK_RC_FAST_D256_SUPPORTED
 /**
@@ -81,19 +77,76 @@ uint32_t esp_clk_tree_lp_slow_get_freq_hz(esp_clk_tree_src_freq_precision_t prec
 uint32_t esp_clk_tree_lp_fast_get_freq_hz(esp_clk_tree_src_freq_precision_t precision);
 
 /**
- * @brief Enable / Disable the clock gate of the clock source
+ * @brief Clock source acquisition configuration
+ */
+typedef struct {
+    struct {
+        uint32_t adjustable : 1; /*!< Request exclusive frequency adjustment when supported */
+    } flags; /*!< Clock source acquisition flags */
+} esp_clk_tree_src_config_t;
+
+/**
+ * @brief Increment or decrement a clock source reference count
  *
- * @note  The clock enable status is maintained by reference counter and
- *        its status is not reset after software restart.
+ * The source is enabled on the 0→1 transition and disabled on the 1→0
+ * transition. Callers should use `esp_clk_tree_acquire_src` and
+ * `esp_clk_tree_release_src`.
  *
  * @param[in] clk_src Clock source available to modules, in soc_module_clk_t
- * @param[in] enable  Enable / Disable the clock gate
+ * @param[in] acquire true to acquire, false to release
+ * @param[in] config  Optional clock source-specific configuration, used on acquire
  *
  * @return
  *      - ESP_OK               Success
  *      - ESP_ERR_INVALID_ARG  Parameter error
  */
-esp_err_t esp_clk_tree_enable_src(soc_module_clk_t clk_src, bool enable);
+esp_err_t esp_clk_tree_manage_src(soc_module_clk_t clk_src, bool acquire,
+                                  const esp_clk_tree_src_config_t *config);
+
+/**
+ * @brief Acquire a clock source
+ *
+ * @note The clock source is enabled on the first acquisition. Acquisitions
+ *       must be balanced by calls to `esp_clk_tree_release_src`.
+ *
+ * @param[in] clk_src Clock source available to modules, in soc_module_clk_t
+ * @param[in] config  Optional clock source-specific configuration
+ *
+ * @return
+ *      - ESP_OK                Success
+ *      - ESP_ERR_INVALID_ARG   Parameter error
+ *      - ESP_ERR_INVALID_STATE Clock source acquisition conflicts with its current mode
+ */
+FORCE_INLINE_ATTR esp_err_t esp_clk_tree_acquire_src(soc_module_clk_t clk_src, const esp_clk_tree_src_config_t *config)
+{
+#if SOC_CLK_APLL_SUPPORTED
+    if (config && config->flags.adjustable && clk_src != SOC_MOD_CLK_APLL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+#else
+    if (config && config->flags.adjustable) {
+        return ESP_ERR_INVALID_ARG;
+    }
+#endif
+    return esp_clk_tree_manage_src(clk_src, true, config);
+}
+
+/**
+ * @brief Release a clock source
+ *
+ * @note The clock source is disabled after its final reference is released.
+ *
+ * @param[in] clk_src Clock source available to modules, in soc_module_clk_t
+ *
+ * @return
+ *      - ESP_OK                Success
+ *      - ESP_ERR_INVALID_ARG   Parameter error
+ *      - ESP_ERR_INVALID_STATE Clock source was not acquired
+ */
+FORCE_INLINE_ATTR esp_err_t esp_clk_tree_release_src(soc_module_clk_t clk_src)
+{
+    return esp_clk_tree_manage_src(clk_src, false, NULL);
+}
 
 /**
  * @brief Initialize clock circuit power and clock gating
@@ -127,24 +180,47 @@ bool esp_clk_tree_is_power_on(soc_root_clk_circuit_t clk_circuit);
 /**
  * @brief Chip-specific root clock circuit power status (port/esp_clk_tree.c per target).
  *
- * Handles all soc_root_clk_circuit_t values except MPLL/APLL (those are in esp_clk_tree_common.c).
+ * Handles all soc_root_clk_circuit_t values except MPLL/APLL.
  */
 bool esp_clk_tree_port_is_power_on(soc_root_clk_circuit_t clk_circuit);
 
 #if SOC_CLK_APLL_SUPPORTED
 /**
- * @brief Enable APLL power if it has not enabled
- *
- * @note Do not use this function in applications or drivers, please use `esp_clk_tree_enable_src` instead.
+ * @brief APLL resource information
  */
-void esp_clk_tree_apll_acquire(void);
+typedef struct {
+    uint32_t frequency_hz; /*!< Configured APLL frequency, or 0 if no valid configuration exists */
+    bool config_valid;     /*!< Whether APLL has a valid frequency configuration */
+} esp_clk_tree_apll_info_t;
 
 /**
- * @brief Shut down APLL power if no peripherals using APLL
+ * @brief Get the current APLL resource information
  *
- * @note Do not use this function in applications or drivers, please use `esp_clk_tree_enable_src` instead.
+ * @param[out] info APLL resource information
+ * @return
+ *      - ESP_OK: Resource information obtained successfully
+ *      - ESP_ERR_INVALID_ARG: Invalid argument
  */
-void esp_clk_tree_apll_release(void);
+esp_err_t esp_clk_tree_apll_get_info(esp_clk_tree_apll_info_t *info);
+
+/**
+ * @brief Acquire the APLL resource internally
+ *
+ * @param[in] config Clock source acquisition configuration, or NULL for defaults
+ * @return
+ *      - ESP_OK: Acquire the APLL resource successfully
+ *      - ESP_ERR_INVALID_STATE: Resource conflict or initialization is in progress
+ */
+esp_err_t esp_clk_tree_apll_acquire(const esp_clk_tree_src_config_t *config);
+
+/**
+ * @brief Release an APLL resource internally
+ *
+ * @return
+ *      - ESP_OK: Release the APLL resource successfully
+ *      - ESP_ERR_INVALID_STATE: APLL was released too many times
+ */
+esp_err_t esp_clk_tree_apll_release(void);
 
 /**
  * @brief Calculate and set APLL coefficients by given frequency
@@ -153,9 +229,9 @@ void esp_clk_tree_apll_release(void);
  *        It will always calculate the minimum coefficients that can satisfy the inequality above, instead of loop them one by one.
  *        which means more appropriate coefficients are likely to exist.
  *        But this algorithm can meet almost all the cases and the accuracy can be guaranteed as well.
- * @note  The APLL frequency is only allowed to set when there is only one peripheral refer to it.
- *        If APLL is already set by another peripheral, this function will return `ESP_ERR_INVALID_STATE`
- *        and output the current frequency by parameter `real_freq`.
+ * @note  This interface can preconfigure APLL while it is idle.
+ *        A non-adjustable APLL resource keeps its frequency stable, while an
+ *        adjustable APLL resource can be changed through this interface.
  *
  * @param expt_freq Expected APLL frequency (unit: Hz)
  * @param real_freq APLL real working frequency [output] (unit: Hz)
@@ -165,6 +241,13 @@ void esp_clk_tree_apll_release(void);
  *      - ESP_ERR_INVALID_STATE: APLL is referred by more than one peripherals, not allowed to change its frequency now
  */
 esp_err_t esp_clk_tree_apll_freq_set(uint32_t expt_freq_hz, uint32_t *real_freq_hz);
+
+/**
+ * @brief Get the APLL resource power status
+ *
+ * @return True if APLL has at least one active reference, false otherwise
+ */
+bool esp_clk_tree_apll_is_power_on(void);
 #endif // SOC_CLK_APLL_SUPPORTED
 
 /**
@@ -172,7 +255,7 @@ esp_err_t esp_clk_tree_apll_freq_set(uint32_t expt_freq_hz, uint32_t *real_freq_
  *
  * Programs the upstream-mux of `clk_src` (e.g. `SOC_MOD_CLK_PLL_F50M`) to
  * source from `upstream` (e.g. `SOC_MOD_CLK_MPLL`, `SOC_MOD_CLK_CPLL`). The
- * clock must already be acquired via `esp_clk_tree_enable_src(clk_src, true)`.
+ * clock must already be acquired via `esp_clk_tree_acquire_src(clk_src, NULL)`.
  *
  * Use `esp_clk_tree_src_set_freq_hz()` afterwards to choose the divider for
  * the desired output frequency. If `select_upstream` is not called before
@@ -210,14 +293,14 @@ esp_err_t esp_clk_tree_src_select_upstream(soc_module_clk_t clk_src,
 /**
  * @brief Enable MPLL power if it has not enabled
  *
- * @note Do not use this function in applications or drivers, please use `esp_clk_tree_enable_src` instead.
+ * @note Do not use this function in applications or drivers, please use `esp_clk_tree_acquire_src` instead.
  */
 esp_err_t esp_clk_tree_mpll_acquire(void);
 
 /**
  * @brief Shut down MPLL power if no peripherals using MPLL
  *
- * @note Do not use this function in applications or drivers, please use `esp_clk_tree_enable_src` instead.
+ * @note Do not use this function in applications or drivers, please use `esp_clk_tree_release_src` instead.
  */
 void esp_clk_tree_mpll_release(void);
 

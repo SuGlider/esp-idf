@@ -32,11 +32,12 @@
 #include "soc/lp_clkrst_reg.h"
 #include "soc/hp_system_reg.h"
 #include "hal/uart_ll.h"
+#include "hal/sec_ll.h"
 #include "hal/gdma_ll.h"
-#include "hal/axi_dma_ll.h"
 #include "hal/dw_gdma_ll.h"
 #include "hal/dma2d_ll.h"
 #include "hal/efuse_hal.h"
+#include "hal/riscv_trace_hal.h"
 #include "esp_memory_utils.h"
 #if CONFIG_ESP_SYSTEM_HW_STACK_GUARD && CONFIG_COMPILER_ENABLE_RISCV_ZCMP
 #include "esp_private/hw_stack_guard.h"
@@ -46,6 +47,9 @@ extern int _bss_end;
 
 void esp_system_reset_modules_on_exit(void)
 {
+    // A software reset leaves the trace encoders running, and they would write into RAM after restart
+    riscv_trace_hal_stop_all_encoders();
+
     // Flush any data left in UART FIFOs
     for (int i = 0; i < SOC_UART_HP_NUM; ++i) {
         if (uart_ll_is_enabled(i)) {
@@ -113,6 +117,12 @@ void esp_system_reset_modules_on_exit(void)
     SET_PERI_REG_MASK(LP_CLKRST_HP_SDMMC_EMAC_RST_CTRL_REG, LP_CLKRST_RST_EN_SDMMC);
     CLEAR_PERI_REG_MASK(LP_CLKRST_HP_SDMMC_EMAC_RST_CTRL_REG, LP_CLKRST_RST_EN_SDMMC);
 
+    // Likewise the EMAC DMA: its descriptor ring and receive buffers live in the
+    // heap, so a receive left running across a restart writes incoming frames
+    // into memory the next boot has already handed out.
+    SET_PERI_REG_MASK(LP_CLKRST_HP_SDMMC_EMAC_RST_CTRL_REG, LP_CLKRST_RST_EN_EMAC);
+    CLEAR_PERI_REG_MASK(LP_CLKRST_HP_SDMMC_EMAC_RST_CTRL_REG, LP_CLKRST_RST_EN_EMAC);
+
     // Reset crypto peripherals. This ensures a clean state for the crypto peripherals after a CPU restart
     // and hence avoiding any possibility with crypto failure in ROM security workflows.
     SET_PERI_REG_MASK(HP_SYS_CLKRST_HP_RST_EN2_REG, HP_SYS_CLKRST_REG_RST_EN_CRYPTO);
@@ -158,6 +168,10 @@ void esp_system_reset_modules_on_exit(void)
     SET_PERI_REG_MASK(HP_SYS_CLKRST_PERI_CLK_CTRL25_REG, HP_SYS_CLKRST_REG_CRYPTO_SHA_CLK_EN);
     SET_PERI_REG_MASK(HP_SYS_CLKRST_PERI_CLK_CTRL25_REG, HP_SYS_CLKRST_REG_CRYPTO_ECDSA_CLK_EN);
 #endif
+
+    // Reset crypto clk mux to XTAL (always-on); otherwise if the parent is gated off,
+    // next-boot ROM encryption ops can hang.
+    sec_ll_crypto_clk_src_sel(SOC_MOD_CLK_XTAL);
 }
 
 static void IRAM_ATTR __attribute__((noinline, noreturn)) esp_restart_noos_inner(void)

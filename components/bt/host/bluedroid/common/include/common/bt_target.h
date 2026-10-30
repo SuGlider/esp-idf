@@ -75,11 +75,7 @@
 
 #define BR_EDR_MAX_RECONNECT_ON_COLLISION UC_BT_CLASSIC_MAX_RECONNECT_ON_COLLISION
 
-#define ENC_KEY_SIZE_CTRL_MODE_NONE 0
-#define ENC_KEY_SIZE_CTRL_MODE_STD  1
-#define ENC_KEY_SIZE_CTRL_MODE_VSC  2
-#define ENC_KEY_SIZE_CTRL_MODE      UC_BT_ENC_KEY_SIZE_CTRL_MODE
-
+#define ESP_BT_CLASSIC_ENABLE_ENC_KEY_SIZE_CTRL_VSC    UC_BT_CLASSIC_ENABLE_ENC_KEY_SIZE_CTRL_VSC
 #define ESP_BT_CLASSIC_ENABLE_POWER_CTRL_VSC UC_BT_CLASSIC_ENABLE_POWER_CTRL_VSC
 
 #if (UC_BT_A2DP_ENABLED == TRUE)
@@ -212,6 +208,16 @@
 #define GOEPC_INCLUDED              TRUE
 #endif /* UC_BT_GOEPC_ENABLED */
 
+#if UC_BT_GOEPS_ENABLED
+#ifndef RFCOMM_INCLUDED
+#define RFCOMM_INCLUDED             TRUE
+#endif
+#ifndef OBEX_INCLUDED
+#define OBEX_INCLUDED               TRUE
+#endif
+#define GOEPS_INCLUDED              TRUE
+#endif /* UC_BT_GOEPS_ENABLED */
+
 #if UC_BT_PBAC_ENABLED
 #define BTC_PBA_CLIENT_INCLUDED     TRUE
 #define BTC_PBA_SUPPORTED_FEAT      UC_BT_PBAC_SUPPORTED_FEAT
@@ -227,6 +233,27 @@
 #define PAN_SUPPORTS_ROLE_PANU      TRUE
 #define PAN_SUPPORTS_ROLE_GN        TRUE
 #define PAN_SUPPORTS_ROLE_NAP       TRUE
+#endif
+
+#if UC_BT_OPP_ENABLED && (UC_BT_OPP_SERVER_ENABLED || UC_BT_OPP_CLIENT_ENABLED)
+#ifndef RFCOMM_INCLUDED
+#define RFCOMM_INCLUDED             TRUE
+#endif
+#ifndef OBEX_INCLUDED
+#define OBEX_INCLUDED               TRUE
+#endif
+#define BTC_OPP_INCLUDED            TRUE
+#define BTA_OPP_INCLUDED            TRUE
+#endif
+
+#if UC_BT_OPP_SERVER_ENABLED
+#define BTA_OPP_SERVER_INCLUDED     TRUE
+#define BTC_OPP_SERVER_INCLUDED     TRUE
+#endif
+
+#if UC_BT_OPP_CLIENT_ENABLED
+#define BTA_OPP_CLIENT_INCLUDED     TRUE
+#define BTC_OPP_CLIENT_INCLUDED     TRUE
 #endif
 
 #endif /* UC_BT_CLASSIC_ENABLED */
@@ -620,6 +647,13 @@
 #define SMP_INCLUDED                FALSE
 #define BLE_PRIVACY_SPT             FALSE
 #endif  /* UC_BT_SMP_ENABLE */
+
+/* CTKD: BR↔LE key derivation via SMP over BR (CID 7) and LE LK bit. */
+#if (UC_BT_SMP_CTKD_ENABLE && (CLASSIC_BT_INCLUDED == TRUE) && (BLE_INCLUDED == TRUE) && (SMP_INCLUDED == TRUE))
+#define SMP_CTKD_INCLUDED           TRUE
+#else
+#define SMP_CTKD_INCLUDED           FALSE
+#endif
 
 #if(UC_BT_SMP_SLAVE_CON_PARAMS_UPD_ENABLE)
 #define SMP_SLAVE_CON_PARAMS_UPD_ENABLE     TRUE
@@ -1358,6 +1392,16 @@
 #define BTM_PAN_SEC_SERVICE_RECORDS 0
 #endif
 
+#if BTA_OPP_SERVER_INCLUDED && BTA_OPP_CLIENT_INCLUDED
+#define BTM_OPP_SEC_SERVICE_RECORDS 4
+#elif BTA_OPP_SERVER_INCLUDED
+#define BTM_OPP_SEC_SERVICE_RECORDS 3
+#elif BTA_OPP_CLIENT_INCLUDED
+#define BTM_OPP_SEC_SERVICE_RECORDS 1
+#else
+#define BTM_OPP_SEC_SERVICE_RECORDS 0
+#endif
+
 #if BTA_AV_CA_INCLUDED
 #define BTM_AC_VA_SEC_SERVICE_RECORDS 1
 #else
@@ -1416,7 +1460,7 @@
    + BTM_AVCT_SEC_SERVICE_RECORDS + BTM_AVDT_SEC_SERVICE_RECORDS + BTM_GAP_SEC_SERVICE_RECORDS    \
    + BTM_HIDD_SEC_SERVICE_RECORDS  + BTM_GATT_SEC_SERVICE_RECORDS + BTM_PBA_SEC_SERVICE_RECORDS   \
    + BTM_HIDH_SEC_SERVICE_RECORDS + BTM_SEC_DEV_SERVICE_RECORDS + BTM_HF_SEC_SERVICE_RECORDS      \
-   + BTM_JV_SEC_SERVICE_RECORDS + BTM_PAN_SEC_SERVICE_RECORDS + BTM_AC_VA_SEC_SERVICE_RECORDS )
+   + BTM_JV_SEC_SERVICE_RECORDS + BTM_PAN_SEC_SERVICE_RECORDS + BTM_AC_VA_SEC_SERVICE_RECORDS + BTM_OPP_SEC_SERVICE_RECORDS )
 #endif
 
 /* If True, force a retrieval of remote device name for each bond in case it's changed */
@@ -1734,7 +1778,7 @@
 
 /* If host flow control enabled, this is the number of buffers the controller can have unacknowledged. */
 #ifndef L2CAP_HOST_FC_ACL_BUFS
-#define L2CAP_HOST_FC_ACL_BUFS      20
+#define L2CAP_HOST_FC_ACL_BUFS      100
 #endif
 
 /* This is set to enable L2CAP to  take the ACL link out of park mode when ACL data is to be sent. */
@@ -2412,6 +2456,16 @@
 #define GOEPC_MAX_CONNECTION              3
 #endif
 
+/* Maximum GOEP server listener allowed */
+#ifndef GOEPS_MAX_SERVER
+#define GOEPS_MAX_SERVER                  OBEX_MAX_SERVER
+#endif
+
+/* Maximum GOEP server connection allowed */
+#ifndef GOEPS_MAX_CONNECTION
+#define GOEPS_MAX_CONNECTION              OBEX_MAX_CONNECTION
+#endif
+
 /******************************************************************************
 **
 ** BNEP
@@ -2492,9 +2546,23 @@
 #define AVDT_NUM_LINKS              2
 #endif
 
-/* Number of simultaneous stream endpoints. */
+/* Number of A2DP sink connections that can be established at the same time. */
+#ifndef BTA_AV_NUM_SNK_CONN
+#define BTA_AV_NUM_SNK_CONN         UC_BT_A2DP_SINK_MAX_CONN
+#endif
+
+/* Number of stream endpoints registered per BTA AV stream control block. This is
+ * the number of codecs the local device exposes on a single stream, it must not be
+ * confused with AVDT_NUM_SEPS which sizes the AVDTP-wide stream endpoint pool. */
+#ifndef BTA_AV_SEPS_PER_STRS
+#define BTA_AV_SEPS_PER_STRS        UC_BT_A2DP_SEP_NUM_MAX
+#endif
+
+/* Number of simultaneous stream endpoints. Every BTA AV stream control block
+ * creates its own set of AVDTP stream endpoints, so the pool must hold the
+ * endpoints of all simultaneous connections. */
 #ifndef AVDT_NUM_SEPS
-#define AVDT_NUM_SEPS               UC_BT_A2DP_SEP_NUM_MAX
+#define AVDT_NUM_SEPS               (BTA_AV_SEPS_PER_STRS * BTA_AV_NUM_SNK_CONN)
 #endif
 
 /* Maximum number of peer SEPs accepted in AVDTP Discover results. */
@@ -2517,9 +2585,11 @@
 
 /* Number of transport channels setup by AVDT for all media streams
  * AVDT_NUM_CHANNELS * Number of simultaneous streams.
+ * At most one stream is open per link, so the number of simultaneous streams is
+ * bounded by AVDT_NUM_LINKS.
  */
 #ifndef AVDT_NUM_TC_TBL
-#define AVDT_NUM_TC_TBL             6
+#define AVDT_NUM_TC_TBL             (AVDT_NUM_LINKS * AVDT_NUM_CHANNELS)
 #endif
 
 /* Maximum size in bytes of the codec capabilities information element. */
@@ -2757,6 +2827,34 @@
 #define GOEPC_INCLUDED            FALSE
 #endif
 
+#ifndef GOEPS_INCLUDED
+#define GOEPS_INCLUDED            FALSE
+#endif
+
+#ifndef BTC_OPP_INCLUDED
+#define BTC_OPP_INCLUDED          FALSE
+#endif
+
+#ifndef BTA_OPP_INCLUDED
+#define BTA_OPP_INCLUDED          FALSE
+#endif
+
+#ifndef BTA_OPP_SERVER_INCLUDED
+#define BTA_OPP_SERVER_INCLUDED   FALSE
+#endif
+
+#ifndef BTA_OPP_CLIENT_INCLUDED
+#define BTA_OPP_CLIENT_INCLUDED   FALSE
+#endif
+
+#ifndef BTC_OPP_SERVER_INCLUDED
+#define BTC_OPP_SERVER_INCLUDED   FALSE
+#endif
+
+#ifndef BTC_OPP_CLIENT_INCLUDED
+#define BTC_OPP_CLIENT_INCLUDED   FALSE
+#endif
+
 /*************************************************************************
  * A2DP Definitions
  */
@@ -2781,9 +2879,17 @@
 #define AVCT_NUM_LINKS              2
 #endif
 
-/* Number of simultaneous AVCTP connections. */
+/* Number of simultaneous AVCTP connection control blocks (CCBs).
+ *
+ * BTA AV keeps a global ACP listener from A2DP registration, then allocates
+ * another ACP CCB when each AVDT signaling channel comes up, and may still
+ * open an INT CCB after AVRCP SDP. Dual-sink therefore needs:
+ *   1 global ACP + N per-link ACP + N INT
+ * The old (AVCT_NUM_LINKS + 2) pool is 4, which is enough for one peer but
+ * overflows on the second ("Out of ccbs"). Size for that worst case plus a
+ * spare slot. */
 #ifndef AVCT_NUM_CONN
-#define AVCT_NUM_CONN               3
+#define AVCT_NUM_CONN               (AVCT_NUM_LINKS * 2 + 2)
 #endif
 
 /******************************************************************************

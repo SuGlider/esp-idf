@@ -26,6 +26,10 @@ On {IDF_TARGET_NAME}, ESP-IDF provides implementations of VFS drivers for I/O ov
 
 Standard I/O is not limited to these options, though. See below on enabling custom destinations for standard I/O.
 
+.. note::
+
+    The console path is separate from an application UART that you open with the :doc:`UART driver <../api-reference/peripherals/uart>` on other pins. If a UART peripheral provides console output, a USB-to-UART bridge chip is required. Many development boards already include this bridge chip onboard for console communication between the PC and the default UART0. If a USB or USB Serial/JTAG peripheral provides console output, no adapter chip is needed. The USB connector on the development board connects directly to the chip's USB D+/D- pins. Traffic on other UART ports does not appear in ``idf.py monitor`` unless a given port is configured as the console. For details, see :doc:`Establish Serial Connection with {IDF_TARGET_NAME} <../get-started/establish-serial-connection>`.
+
 Configuration
 -------------
 
@@ -56,6 +60,8 @@ Enabling one of these options will cause the corresponding VFS driver to be buil
     The following secondary console options are available:
 
         - :menuitem:`CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG`
+
+    The secondary console is the compile-time equivalent of a runtime auxiliary sink described below. It is a fixed, output-only destination.
 
 Standard Streams and FreeRTOS Tasks
 -----------------------------------
@@ -170,3 +176,33 @@ Once you have created a custom VFS driver, use :cpp:func:`esp_vfs_register_fs()`
     stderr = f;
 
 Note that logging functions (``ESP_LOGE()``, etc.) write their output to ``stdout``. Keep this in mind when using logging within the implementation of your custom VFS (or any components which it calls). For example, if the custom VFS driver's ``write()`` operation fails and uses ``ESP_LOGE()`` to log the error, this will cause the output to be sent to ``stdout``, which would again call the custom VFS driver's ``write()`` operation. This would result in an infinite loop. It is recommended to keep track of this re-entry condition in the VFS driver's ``write()`` implementation, and return immediately if the write operation is still in progress.
+
+Console I/O multiplexer
+-----------------------
+
+In addition to redirecting ``stdout`` and ``stderr`` manually (as shown above), ESP-IDF provides a console I/O multiplexer that lets an application register one or more custom VFS backends and switch between them at runtime, without reassigning the ``stdin``/``stdout``/``stderr`` streams itself.
+
+The multiplexer is exposed on ``/dev/console`` and manages backends in two roles:
+
+- **Primary** — the active read and write backend. Both application input (``stdin``) and output (``stdout``/``stderr``) go through it. Exactly one backend is the primary at any time. Use :cpp:func:`esp_stdio_set_primary_driver` to choose it; the call returns the previously active primary, so the application can restore it later. The previous primary is not removed — it stays registered as a write-only auxiliary. The default console selected in Kconfig is registered automatically at boot and starts as the primary.
+- **Auxiliary** — a write-only sink. Every byte written to ``stdout`` and ``stderr`` is fanned out to all registered auxiliaries in addition to the primary. This is useful, for example, to mirror console output to a log file or a network connection while keeping the interactive console on the physical interface.
+
+A backend is added with :cpp:func:`esp_stdio_register_driver` (initially as an auxiliary) and removed with :cpp:func:`esp_stdio_unregister_driver`. The backend currently acting as the primary cannot be unregistered; promote another one with :cpp:func:`esp_stdio_set_primary_driver` first.
+
+The maximum number of backends that can be registered at once (the primary plus all auxiliaries, including the Kconfig default) is set by :ref:`CONFIG_ESP_STDIO_MAX_VFS_ENTRIES`.
+
+The multiplexer API is declared in ``esp_stdio.h`` and is available when ``CONFIG_VFS_SUPPORT_IO`` is enabled. See the :ref:`API reference <esp-stdio-api-reference>` below for the full behavior of each call.
+
+Example
+^^^^^^^
+
+The :example:`system/esp_stdio/runtime_registration` example shows the full flow: it registers a custom backend, makes it the active console, and later reverts to the previous one.
+
+The same re-entrancy caveat described above for logging applies here: the backend's ``write()`` implementation must not trigger logging that would recursively write to the console.
+
+.. _esp-stdio-api-reference:
+
+API Reference
+^^^^^^^^^^^^^
+
+.. include-build-file:: inc/esp_stdio.inc

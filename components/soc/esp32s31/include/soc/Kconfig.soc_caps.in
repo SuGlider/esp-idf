@@ -231,6 +231,10 @@ config SOC_PMU_SUPPORTED
     bool
     default y
 
+config SOC_PMU_PVT_SUPPORTED
+    bool
+    default y
+
 config SOC_RTC_TIMER_SUPPORTED
     bool
     default y
@@ -403,6 +407,10 @@ config SOC_USB_UTMI_PHY_NUM
     int
     default 1
 
+config SOC_USB_OTG_PSRAM_DMA_CAPABLE
+    bool
+    default y
+
 config SOC_PM_SUPPORT_USB_WAKEUP
     bool
     default y
@@ -483,6 +491,22 @@ config SOC_ADC_SHARED_POWER
     bool
     default y
 
+config SOC_DAC_CHAN_NUM
+    int
+    default 2
+
+config SOC_DAC_HS_RESOLUTION
+    int
+    default 10
+
+config SOC_DAC_RESOLUTION
+    int
+    default 12
+
+config SOC_DAC_SUPPORT_BUFFER_CFG
+    bool
+    default y
+
 config SOC_CACHE_WRITEBACK_SUPPORTED
     bool
     default y
@@ -490,6 +514,14 @@ config SOC_CACHE_WRITEBACK_SUPPORTED
 config SOC_CACHE_FREEZE_SUPPORTED
     bool
     default y
+
+config SOC_CACHE_CNT_SUPPORTED
+    bool
+    default y
+
+config SOC_CACHE_CNT_UNITS_NUM
+    int
+    default 4
 
 config SOC_CPU_CORES_NUM
     int
@@ -592,6 +624,10 @@ config SOC_GDMA_SUPPORT_ETM
     default y
 
 config SOC_GDMA_SUPPORT_SLEEP_RETENTION
+    bool
+    default y
+
+config SOC_GDMA_SUPPORT_WEIGHTED_ARBITRATION
     bool
     default y
 
@@ -823,6 +859,10 @@ config SOC_PCNT_SUPPORT_STEP_NOTIFY
     bool
     default y
 
+config SOC_RISCV_SV32_SUPPORTED
+    bool
+    default y
+
 config SOC_MMU_PAGE_SIZE_CONFIGURABLE
     bool
     default y
@@ -931,6 +971,10 @@ config SOC_MEMSPI_TIMING_TUNING_BY_DQS
     bool
     default y
 
+config SOC_MEMSPI_TIMING_TUNING_BY_FLASH_DELAY
+    bool
+    default y
+
 config SOC_SPI_MEM_SUPPORT_CACHE_32BIT_ADDR_MAP
     bool
     default y
@@ -948,6 +992,10 @@ config SOC_MEMSPI_IS_INDEPENDENT
     default y
 
 config SOC_PSRAM_MEMSPI_IS_INDEPENDENT
+    bool
+    default y
+
+config SOC_SPI_MEM_FLASH_SUPPORT_HPM
     bool
     default y
 
@@ -1091,6 +1139,10 @@ config SOC_SHA_SUPPORT_SHA512_T
     bool
     default y
 
+config SOC_SHA_SUPPORT_SM3
+    bool
+    default y
+
 config SOC_MPI_MEM_BLOCKS_NUM
     int
     default 4
@@ -1128,6 +1180,10 @@ config SOC_ECDSA_SUPPORT_CURVE_P384
     default y
 
 config SOC_ECDSA_SUPPORT_CURVE_SPECIFIC_KEY_PURPOSES
+    bool
+    default y
+
+config SOC_ECDSA_SUPPORT_SOFTWARE_KEY
     bool
     default y
 
@@ -1711,6 +1767,10 @@ config SOC_BT_CLASSIC_SUPPORTED
     bool
     default y
 
+config SOC_ORCA_BREDR_CONTROLLER
+    bool
+    default y
+
 config SOC_BLE_SUPPORTED
     bool
     default y
@@ -1764,6 +1824,10 @@ config SOC_BLE_SUBRATE_SUPPORTED
     default y
 
 config SOC_BLE_PERIODIC_ADV_WITH_RESPONSE
+    bool
+    default y
+
+config SOC_BT_H2C_ENC_KEY_CTRL_ENH_VSC_SUPPORTED
     bool
     default y
 

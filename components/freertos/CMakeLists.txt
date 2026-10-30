@@ -86,6 +86,7 @@ if(arch STREQUAL "linux")
         "${kernel_impl}/portable/${arch}/utils/linux_port_coop_syscalls.c")
     if(kernel_impl STREQUAL "FreeRTOS-Kernel")
         list(APPEND srcs
+            "app_startup.c"
             "${kernel_impl}/portable/${arch}/port_idf.c")
     endif()
 else()
@@ -103,6 +104,10 @@ endif()
 list(APPEND srcs
     "esp_additions/idf_additions_event_groups.c"
     "esp_additions/idf_additions.c")
+
+if(CONFIG_FREERTOS_DEBUG_TASK_PIE_BLACKLIST)
+    list(APPEND srcs "esp_additions/freertos_pie_blacklist.c")
+endif()
 
 # ------------------------------------------------ Set Public Includes -------------------------------------------------
 
@@ -173,6 +178,11 @@ idf_component_register(SRCS ${srcs}
                     LDFRAGMENTS ${ldfragments}
                     PRIV_REQUIRES ${private_requirements})
 
+# Allows users to provide their own vApplicationPassiveIdleHook().
+if(CONFIG_FREERTOS_USE_PASSIVE_IDLE_HOOK)
+    target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=vApplicationPassiveIdleHook")
+endif()
+
 if(arch STREQUAL "linux")
     target_compile_definitions(${COMPONENT_LIB} PUBLIC "projCOVERAGE_TEST=0")
     target_link_libraries(${COMPONENT_LIB} PUBLIC pthread)
@@ -223,20 +233,10 @@ else()
         idf_component_optional_requires(PUBLIC esp_trace)
     endif()
 
-    if(CONFIG_ESP_SYSTEM_GDBSTUB_RUNTIME)
-        # [refactor-todo]: app_startup.c esp_startup_start_app_other_cores() calls esp_gdbstub_init() (called on CPU0).
-        # This should be resolved when link-time registration of startup functions is added.
-        idf_component_optional_requires(PRIVATE esp_gdbstub)
-    endif()
-
     if(CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER)
         # [refactor-todo]: esp_timer is required by FreeRTOS when we use esp_timer_get_time() to do profiling
         # Introduce a port wrapper function to avoid including esp_timer.h into the public header
         idf_component_optional_requires(PUBLIC esp_timer)
-    endif()
-
-    if(CONFIG_SPIRAM)
-        idf_component_optional_requires(PRIVATE esp_psram)
     endif()
 
     if(CONFIG_PM_TRACE)

@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: CC0-1.0
 
 import re
+import struct
 import sys
 from pathlib import Path
 
 import pytest
+from elftools.elf.elffile import ELFFile
 from pytest_embedded_idf.utils import idf_parametrize
 from pytest_embedded_idf.utils import soc_filtered_targets
 
@@ -25,14 +27,6 @@ TARGETS_DUAL_CORE = panic_tests.TARGETS_DUAL_CORE
 TARGETS_RISCV = panic_tests.TARGETS_RISCV
 TARGETS_RISCV_DUAL_CORE = panic_tests.TARGETS_RISCV_DUAL_CORE
 COREDUMP_APP = str(Path(__file__).resolve().parent)
-
-COREDUMP_UNSUPPORTED_TARGETS = {''}
-COREDUMP_TARGETS_ALL = [target for target in TARGETS_ALL if target not in COREDUMP_UNSUPPORTED_TARGETS]
-COREDUMP_TARGETS_DUAL_CORE = [target for target in TARGETS_DUAL_CORE if target not in COREDUMP_UNSUPPORTED_TARGETS]
-COREDUMP_TARGETS_RISCV = [target for target in TARGETS_RISCV if target not in COREDUMP_UNSUPPORTED_TARGETS]
-COREDUMP_TARGETS_RISCV_DUAL_CORE = [
-    target for target in TARGETS_RISCV_DUAL_CORE if target not in COREDUMP_UNSUPPORTED_TARGETS
-]
 
 CONFIGS = panic_tests.configs_for_app(
     COREDUMP_APP,
@@ -66,18 +60,19 @@ CONFIG_GDBSTUB_COREDUMP = panic_tests.configs_for_app(COREDUMP_APP, ['gdbstub_co
 # faults in idle-task context, whose small stack overflows the FreeRTOS end-of-stack watchpoint
 # if the coredump runs in place, causing a double panic. Do not switch back to coredump_flash_default.
 CONFIG_TCB_CORRUPTED = panic_tests.configs_for_app(COREDUMP_APP, ['coredump_flash_custom_stack'])
+CONFIG_RISCV_TRACE = panic_tests.configs_for_app(COREDUMP_APP, ['coredump_flash_riscv_trace'])
 
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIGS, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_ALL, indirect=['target'])
+@idf_parametrize('target', TARGETS_ALL, indirect=['target'])
 def test_task_wdt_cpu0(dut: PanicTestDut, config: str, test_func_name: str) -> None:
     panic_tests.test_task_wdt_cpu0(dut, config, test_func_name)
 
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIGS_DUAL_CORE, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_DUAL_CORE, indirect=['target'])
+@idf_parametrize('target', TARGETS_DUAL_CORE, indirect=['target'])
 def test_task_wdt_cpu1(dut: PanicTestDut, config: str, test_func_name: str) -> None:
     panic_tests.test_task_wdt_cpu1(dut, config, test_func_name)
 
@@ -166,84 +161,84 @@ def test_panic_extram_stack_heap_bss_xip(dut: PanicTestDut, config: str) -> None
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIGS, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_ALL, indirect=['target'])
+@idf_parametrize('target', TARGETS_ALL, indirect=['target'])
 def test_int_wdt(dut: PanicTestDut, target: str, config: str, test_func_name: str) -> None:
     panic_tests.test_int_wdt(dut, target, config, test_func_name)
 
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIGS, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_ALL, indirect=['target'])
+@idf_parametrize('target', TARGETS_ALL, indirect=['target'])
 def test_int_wdt_cache_disabled(dut: PanicTestDut, target: str, config: str, test_func_name: str) -> None:
     panic_tests.test_int_wdt_cache_disabled(dut, target, config, test_func_name)
 
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIGS, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_ALL, indirect=['target'])
+@idf_parametrize('target', TARGETS_ALL, indirect=['target'])
 def test_cache_error(dut: PanicTestDut, config: str, test_func_name: str) -> None:
     panic_tests.test_cache_error(dut, config, test_func_name)
 
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIGS, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_ALL, indirect=['target'])
+@idf_parametrize('target', TARGETS_ALL, indirect=['target'])
 def test_stack_overflow(dut: PanicTestDut, config: str, test_func_name: str) -> None:
     panic_tests.test_stack_overflow(dut, config, test_func_name)
 
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIGS, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_ALL, indirect=['target'])
+@idf_parametrize('target', TARGETS_ALL, indirect=['target'])
 def test_instr_fetch_prohibited(dut: PanicTestDut, config: str, test_func_name: str) -> None:
     panic_tests.test_instr_fetch_prohibited(dut, config, test_func_name)
 
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIGS, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_ALL, indirect=['target'])
+@idf_parametrize('target', TARGETS_ALL, indirect=['target'])
 def test_illegal_instruction(dut: PanicTestDut, config: str, test_func_name: str) -> None:
     panic_tests.test_illegal_instruction(dut, config, test_func_name)
 
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIGS, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_ALL, indirect=['target'])
+@idf_parametrize('target', TARGETS_ALL, indirect=['target'])
 def test_storeprohibited(dut: PanicTestDut, config: str, test_func_name: str) -> None:
     panic_tests.test_storeprohibited(dut, config, test_func_name)
 
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIGS, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_ALL, indirect=['target'])
+@idf_parametrize('target', TARGETS_ALL, indirect=['target'])
 def test_loadprohibited(dut: PanicTestDut, config: str, test_func_name: str) -> None:
     panic_tests.test_loadprohibited(dut, config, test_func_name)
 
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIGS, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_ALL, indirect=['target'])
+@idf_parametrize('target', TARGETS_ALL, indirect=['target'])
 def test_abort(dut: PanicTestDut, config: str, test_func_name: str) -> None:
     panic_tests.test_abort(dut, config, test_func_name)
 
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIGS, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_ALL, indirect=['target'])
+@idf_parametrize('target', TARGETS_ALL, indirect=['target'])
 def test_abort_cache_disabled(dut: PanicTestDut, config: str, test_func_name: str) -> None:
     panic_tests.test_abort_cache_disabled(dut, config, test_func_name)
 
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIGS, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_ALL, indirect=['target'])
+@idf_parametrize('target', TARGETS_ALL, indirect=['target'])
 def test_assert(dut: PanicTestDut, config: str, test_func_name: str) -> None:
     panic_tests.test_assert(dut, config, test_func_name)
 
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIGS, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_ALL, indirect=['target'])
+@idf_parametrize('target', TARGETS_ALL, indirect=['target'])
 def test_assert_cache_disabled(dut: PanicTestDut, config: str, test_func_name: str) -> None:
     panic_tests.test_assert_cache_disabled(dut, config, test_func_name)
 
@@ -259,21 +254,21 @@ def test_gdbstub_coredump(dut: PanicTestDut) -> None:
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIGS_HW_STACK_GUARD, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_RISCV, indirect=['target'])
+@idf_parametrize('target', TARGETS_RISCV, indirect=['target'])
 def test_hw_stack_guard_cpu0(dut: PanicTestDut, config: str, test_func_name: str) -> None:
     panic_tests.test_hw_stack_guard_cpu0(dut, config, test_func_name)
 
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIGS_HW_STACK_GUARD_DUAL_CORE, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_RISCV_DUAL_CORE, indirect=['target'])
+@idf_parametrize('target', TARGETS_RISCV_DUAL_CORE, indirect=['target'])
 def test_hw_stack_guard_cpu1(dut: PanicTestDut, config: str, test_func_name: str) -> None:
     panic_tests.test_hw_stack_guard_cpu1(dut, config, test_func_name)
 
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIG_CAPTURE_DRAM, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_ALL, indirect=['target'])
+@idf_parametrize('target', TARGETS_ALL, indirect=['target'])
 def test_capture_dram(dut: PanicTestDut, config: str, test_func_name: str) -> None:
     dut.run_test_func(test_func_name)
     regex_pattern = rb'assert failed:[\s\w()]*?\s[.\w/]*\.(?:c|cpp|h|hpp):\d.*$'
@@ -330,7 +325,7 @@ def _test_coredump_summary(dut: PanicTestDut, flash_encrypted: bool, coredump_en
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIG_COREDUMP_SUMMARY, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_ALL, indirect=['target'])
+@idf_parametrize('target', TARGETS_ALL, indirect=['target'])
 def test_coredump_summary(dut: PanicTestDut) -> None:
     _test_coredump_summary(dut, False, False)
 
@@ -344,7 +339,7 @@ def test_coredump_summary_flash_encrypted(dut: PanicTestDut, config: str) -> Non
 
 @pytest.mark.generic
 @pytest.mark.parametrize('app_path, config', CONFIG_TCB_CORRUPTED, indirect=True)
-@idf_parametrize('target', COREDUMP_TARGETS_ALL, indirect=['target'])
+@idf_parametrize('target', TARGETS_ALL, indirect=['target'])
 def test_tcb_corrupted(dut: PanicTestDut, target: str, config: str, test_func_name: str) -> None:
     dut.run_test_func(test_func_name)
     if dut.is_xtensa:
@@ -374,3 +369,94 @@ def test_tcb_corrupted(dut: PanicTestDut, target: str, config: str, test_func_na
     coredump_pattern = [re.compile(pattern.decode('utf-8')) for pattern in regex_patterns]
 
     common_test(dut, config, expected_backtrace=None, expected_coredump=coredump_pattern)
+
+
+ESP_RISCV_TRACE_NOTE_NAME = 'ESP_RISCV_TRACE'
+ESP_RISCV_TRACE_NOTE_TYPE = 680
+ESP_RISCV_TRACE_NOTE_MAGIC = 0x53545652
+ESP_RISCV_TRACE_NOTE_HEADER_SIZE = 80
+ESP_RISCV_TRACE_NOTE_RECORD_SIZE = 44
+ESP_RISCV_TRACE_NOTE_NO_SEGMENT = 0xFFFFFFFF
+ESP_RISCV_TRACE_CAPTURE_REASON_PANIC = 2
+ESP_RISCV_TRACE_SNAPSHOT_STATE_FROZEN = 4
+
+
+def _riscv_trace_note_desc(elf: ELFFile) -> bytes:
+    for seg in elf.iter_segments():
+        if seg.header['p_type'] != 'PT_NOTE':
+            continue
+        for note in seg.iter_notes():
+            name = note['n_name'].rstrip('\x00')
+            if name == ESP_RISCV_TRACE_NOTE_NAME and note['n_type'] == ESP_RISCV_TRACE_NOTE_TYPE:
+                desc = note['n_desc']
+                return desc.encode('latin1') if isinstance(desc, str) else bytes(desc)
+    raise AssertionError('coredump ELF has no ESP_RISCV_TRACE note')
+
+
+def _check_riscv_trace_coredump(core_path: str, expected_cores: int) -> None:
+    with open(core_path, 'rb') as f:
+        assert f.read(4) == b'\x7fELF', f'{core_path} is not an ELF file'
+        f.seek(0)
+        elf = ELFFile(f)
+        desc = _riscv_trace_note_desc(elf)
+        assert len(desc) >= ESP_RISCV_TRACE_NOTE_HEADER_SIZE
+
+        magic, write_seq = struct.unpack_from('<II', desc, 0)
+        abi_major, abi_minor, hdr_sz, rec_sz, core_count, reason, sha_sz, params_sz = struct.unpack_from(
+            '<8B', desc, 12
+        )
+        assert magic == ESP_RISCV_TRACE_NOTE_MAGIC
+        assert (write_seq & 1) == 0
+        assert abi_major == 1 and abi_minor == 0
+        assert hdr_sz == ESP_RISCV_TRACE_NOTE_HEADER_SIZE
+        assert rec_sz == ESP_RISCV_TRACE_NOTE_RECORD_SIZE
+        assert core_count == expected_cores
+        assert reason == ESP_RISCV_TRACE_CAPTURE_REASON_PANIC
+        assert sha_sz == 32 and params_sz == 28
+        assert len(desc) == ESP_RISCV_TRACE_NOTE_HEADER_SIZE + core_count * ESP_RISCV_TRACE_NOTE_RECORD_SIZE
+
+        for i in range(core_count):
+            off = ESP_RISCV_TRACE_NOTE_HEADER_SIZE + i * ESP_RISCV_TRACE_NOTE_RECORD_SIZE
+            core_id, state, _mem, _pkt, _addr, _resync, reserved0, head_valid, fifo_empty = struct.unpack_from(
+                '<9B', desc, off
+            )
+            seg_index, buf_addr, capacity, seg_size, head_offset = struct.unpack_from('<5I', desc, off + 12)
+
+            assert core_id == i
+            assert state == ESP_RISCV_TRACE_SNAPSHOT_STATE_FROZEN
+            assert reserved0 == 0
+            assert head_valid == 1
+            assert fifo_empty == 1
+            assert seg_index != ESP_RISCV_TRACE_NOTE_NO_SEGMENT
+            assert buf_addr != 0
+            assert capacity >= 2048 and capacity % 4 == 0
+            assert seg_size == capacity
+            assert 0 < head_offset <= capacity
+
+            # Match the trace buffer by address and size.
+            matches = [
+                seg
+                for seg in elf.iter_segments()
+                if seg.header['p_type'] == 'PT_LOAD'
+                and seg.header['p_vaddr'] == buf_addr
+                and seg.header['p_filesz'] == capacity
+            ]
+            assert len(matches) == 1, f'core {core_id} expected one PT_LOAD at 0x{buf_addr:x} size {capacity}'
+            assert len(matches[0].data()) == capacity
+
+
+@pytest.mark.generic
+@pytest.mark.parametrize('app_path, config', CONFIG_RISCV_TRACE, indirect=True)
+@idf_parametrize('target', soc_filtered_targets('SOC_RISCV_TRACE_SUPPORTED == 1'), indirect=['target'])
+def test_riscv_trace_coredump(dut: PanicTestDut, config: str) -> None:
+    dut.run_test_func('test_abort')
+    regex_pattern = rb'abort\(\) was called at PC [0-9xa-f]+ on core 0'
+    dut.expect(regex_pattern)
+    dut.expect_stack_dump()
+    dut.expect_elf_sha256()
+    dut.expect_none(['Guru Meditation', 'Re-entered core dump'])
+
+    coredump_pattern = re.compile(PANIC_ABORT_PREFIX + regex_pattern.decode('utf-8'))
+    expect_coredump_flash_write_logs(dut, config)
+    core_path = dut.process_coredump_flash([coredump_pattern])
+    _check_riscv_trace_coredump(core_path, 2 if dut.is_multi_core else 1)

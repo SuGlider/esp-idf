@@ -6,7 +6,17 @@ from pytest_embedded_idf.utils import soc_filtered_targets
 
 
 @pytest.mark.generic
-@pytest.mark.parametrize('config', ['release', 'iram_safe'], indirect=True)
+@pytest.mark.parametrize(
+    'config',
+    [
+        pytest.param(
+            'release',
+            marks=pytest.mark.temp_skip_ci(targets=['esp32h21'], reason='cannot pass'),  # TODO: IDF-16193
+        ),
+        'iram_safe',
+    ],
+    indirect=True,
+)
 @idf_parametrize(
     'target',
     soc_filtered_targets('SOC_GPSPI_SUPPORTED == 1 and IDF_TARGET not in ["esp32c5"]'),
@@ -31,8 +41,27 @@ def test_slave_single_dev_esp32c5_rev1(case_tester) -> None:  # type: ignore
     case_tester.run_all_normal_cases(reset=True)
 
 
+def get_runner_psram_marks(target: str) -> tuple[pytest.MarkDecorator, ...]:
+    if target == 'esp32s3':
+        return (pytest.mark.flash_encryption_f8r8,)
+    return (pytest.mark.flash_encryption,)
+
+
+@pytest.mark.parametrize(
+    'config, target',
+    [
+        pytest.param('flash_enc', target, marks=get_runner_psram_marks(target))
+        for target in soc_filtered_targets('SOC_PSRAM_DMA_CAPABLE == 1 and SOC_GPSPI_SUPPORTED == 1')
+    ],
+    indirect=True,
+)
+def test_spi_slave_flash_encryption(case_tester) -> None:  # type: ignore
+    case_tester.run_all_normal_cases(reset=True)
+
+
 @pytest.mark.generic_multi_device
 @pytest.mark.parametrize('count, config', [(2, 'release'), (2, 'iram_safe')], indirect=True)
+@pytest.mark.temp_skip_ci(targets=['esp32h21'], reason='lack of runner')  # TODO: IDF-16193
 @idf_parametrize('target', ['supported_targets'], indirect=['target'])
 def test_slave_multi_dev(case_tester) -> None:  # type: ignore
     case_tester.run_all_multi_dev_cases(reset=True, timeout=30)

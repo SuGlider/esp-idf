@@ -72,7 +72,8 @@ def test_mbedtls_psram(dut: Dut) -> None:
 )
 @idf_parametrize('target', PSRAM_ECC_DMA_TARGETS, indirect=['target'])
 def test_mbedtls_psram_ecc(dut: Dut) -> None:
-    dut.run_all_single_board_cases(group='aes', timeout=180)
+    # ECC makes the MSPI alignment rule apply, which the GCM DMA descriptors have to respect too
+    dut.run_all_single_board_cases(group=['aes', 'aes-gcm'], timeout=180)
 
 
 @pytest.mark.flash_encryption_psram
@@ -96,7 +97,7 @@ def test_mbedtls_psram_all_ext_flash_enc_esp32(dut: Dut) -> None:
     ],
     indirect=True,
 )
-@idf_parametrize('target', ['esp32p4', 'esp32c5'], indirect=['target'])
+@idf_parametrize('target', ['esp32p4', 'esp32c5', 'esp32s31'], indirect=['target'])
 def test_mbedtls_psram_all_ext_flash_enc(dut: Dut) -> None:
     dut.run_all_single_board_cases(timeout=180)
 
@@ -125,6 +126,20 @@ def test_mbedtls_psram_all_ext_flash_enc_s3_f4r8(dut: Dut) -> None:
 @idf_parametrize('target', ['esp32h2'], indirect=['target'])
 def test_mbedtls_ecdsa_sign(dut: Dut) -> None:
     dut.run_all_single_board_cases(group='efuse_key')
+
+
+@pytest.mark.generic
+@pytest.mark.parametrize(
+    'config',
+    [
+        'default',
+    ],
+    indirect=True,
+)
+@idf_parametrize('target', ['esp32s31'], indirect=['target'])
+def test_mbedtls_ecdsa_sw_key_sign(dut: Dut) -> None:
+    # Software-key ECDSA tests need no eFuse provisioning and are enabled by default
+    dut.run_all_single_board_cases(group='ecdsa_sw_key')
 
 
 @pytest.mark.nvs_encr_hmac
@@ -198,3 +213,39 @@ def test_mbedtls_cross_signed(dut: Dut) -> None:
             'certificate bundle - expired cert rejected with time-date check',
         ]
     )
+
+
+@pytest.mark.generic
+@pytest.mark.parametrize(
+    'config',
+    [
+        'pd_top',
+    ],
+    indirect=True,
+)
+@idf_parametrize(
+    'target',
+    list(
+        filter(
+            lambda t: t != 'esp32c5',
+            soc_filtered_targets('SOC_PM_SUPPORT_TOP_PD == 1 and SOC_PAU_SUPPORTED == 1'),
+        )
+    ),
+    indirect=['target'],
+)
+def test_mbedtls_crypto_pd_top_lightsleep(dut: Dut) -> None:
+    dut.run_all_single_board_cases(group='pd_top')
+
+
+@pytest.mark.generic
+@pytest.mark.esp32c5_rev1
+@pytest.mark.parametrize(
+    'config',
+    [
+        'pd_top',
+    ],
+    indirect=True,
+)
+@idf_parametrize('target', ['esp32c5'], indirect=['target'])
+def test_mbedtls_crypto_pd_top_lightsleep_esp32c5_eco3(dut: Dut) -> None:
+    dut.run_all_single_board_cases(group='pd_top')

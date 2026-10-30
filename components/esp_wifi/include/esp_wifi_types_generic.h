@@ -258,6 +258,7 @@ typedef struct {
                                                             Please note that the 'channel' parameter above needs to be set to 0 to allow scanning by bitmap.
                                                             Also, note that only allowed channels configured by wifi_country_t can be scanned. */
     bool coex_background_scan;                         /**< Enable it to scan return home channel under coexist */
+    uint8_t max_scan_ap_num;                           /**< Max AP records to keep during the scan, sorted by RSSI. 0 means no limit. */
 } wifi_scan_config_t;
 
 /**
@@ -890,6 +891,11 @@ typedef struct {
     uint8_t channel;            /**< Primary channel of the FTM Responder */
     uint8_t frm_count;          /**< No. of FTM frames requested in terms of 4 or 8 bursts (allowed values - 0(No pref), 16, 24, 32, 64) */
     uint16_t burst_period;      /**< Requested period between FTM bursts in 100's of milliseconds (allowed values 0(No pref) - 100) */
+    uint8_t secondary_chan;     /**< Secondary channel of the FTM Responder.
+                                     0: no preference (auto-selected when the Initiator is in 40 MHz); 1: above; 2: below.
+                                     Ignored if the Initiator bandwidth is 20MHz OR when the Responder is the connected AP (its own secondary is used).
+                                     If it differs from the home channel's secondary while connected or in APSTA
+                                     on the same channel, the session falls back to 20 MHz. */
 } wifi_ftm_initiator_cfg_t;
 
 #define ESP_WIFI_NAN_MAX_SVC_SUPPORTED  2      /**< Maximum number of NAN or NAN-USD services supported */

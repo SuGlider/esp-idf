@@ -366,6 +366,7 @@ static inline void spimem_flash_ll_set_write_protect(spi_mem_dev_t *dev, bool wp
  *
  * @param dev Beginning address of the peripheral registers.
  */
+__attribute__((always_inline))
 static inline void spimem_flash_ll_enter_dpd(spi_mem_dev_t *dev)
 {
     dev->cmd.flash_dp = 1;
@@ -376,6 +377,7 @@ static inline void spimem_flash_ll_enter_dpd(spi_mem_dev_t *dev)
  *
  * @param dev Beginning address of the peripheral registers.
  */
+__attribute__((always_inline))
 static inline void spimem_flash_ll_exit_dpd(spi_mem_dev_t *dev)
 {
     dev->cmd.flash_res = 1;
@@ -783,21 +785,6 @@ static inline uint32_t spimem_flash_ll_get_ctrl_val(spi_mem_dev_t *dev)
 }
 
 /**
- * Set D/Q output level during dummy phase
- *
- * @param dev Beginning address of the peripheral registers.
- * @param out_en whether to enable IO output for dummy phase
- * @param out_level dummy output level
- */
-static inline void spimem_flash_ll_set_dummy_out(spi_mem_dev_t *dev, uint32_t out_en, uint32_t out_lev)
-{
-    dev->ctrl.fdummy_rin = out_en;
-    dev->ctrl.q_pol = out_lev;
-    dev->ctrl.d_pol = out_lev;
-    dev->ctrl.wp_reg = out_lev;
-}
-
-/**
  * @brief Disable FLASH MSPI clock
  *
  * @param mspi_id  mspi_id
@@ -818,11 +805,11 @@ __attribute__((always_inline))
 static inline void spimem_flash_ll_sync_reset(void)
 {
     SPIMEM1.ctrl2.sync_reset = 0;
-    // SPIMEM0ctrl2.sync_reset = 0;
+    SPIMEM0.mem_ctrl2.mem_sync_reset = 0;
     SPIMEM1.ctrl2.sync_reset = 1;
-    // SPIMEM0ctrl2.sync_reset = 1;
+    SPIMEM0.mem_ctrl2.mem_sync_reset = 1;
     SPIMEM1.ctrl2.sync_reset = 0;
-    // SPIMEM0ctrl2.sync_reset = 0;
+    SPIMEM0.mem_ctrl2.mem_sync_reset = 0;
 }
 
 /**

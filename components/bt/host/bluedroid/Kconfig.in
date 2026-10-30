@@ -1,9 +1,9 @@
-config BT_BTC_TASK_STACK_SIZE
-    int "Bluetooth event (callback to application) task stack size"
+config BT_BLUEDROID_PINNED_TO_CORE
+    int
     depends on BT_BLUEDROID_ENABLED
-    default 3072
-    help
-        This select btc task stack size
+    default 0 if BT_BLUEDROID_PINNED_TO_CORE_0
+    default 1 if BT_BLUEDROID_PINNED_TO_CORE_1
+    default 0
 
 choice BT_BLUEDROID_PINNED_TO_CORE_CHOICE
     prompt "The cpu core which Bluedroid run"
@@ -18,13 +18,6 @@ choice BT_BLUEDROID_PINNED_TO_CORE_CHOICE
         bool "Core 1 (APP CPU)"
         depends on !FREERTOS_UNICORE
 endchoice
-
-config BT_BLUEDROID_PINNED_TO_CORE
-    int
-    depends on BT_BLUEDROID_ENABLED
-    default 0 if BT_BLUEDROID_PINNED_TO_CORE_0
-    default 1 if BT_BLUEDROID_PINNED_TO_CORE_1
-    default 0
 
 config BT_BTU_TASK_STACK_SIZE
     int "Bluetooth Bluedroid Host Stack task stack size"
@@ -64,23 +57,43 @@ config BT_CLASSIC_ENABLE_POWER_CTRL_VSC
         Enable Espressif Vendor-specific HCI commands for power control of Classic Bluetooth
 
 choice BT_ENC_KEY_SIZE_CTRL_ENABLED
-    prompt "configure encryption key size"
+    prompt "configure encryption key size (Deprecated)"
+    warning "This option is deprecated and will be removed in a future release"
     depends on BT_CLASSIC_ENABLED
     default BT_ENC_KEY_SIZE_CTRL_VSC
     help
         This chooses the support status of configuring encryption key size
+        Deprecated: This option is deprecated and will be removed in a future release.
 
     config BT_ENC_KEY_SIZE_CTRL_STD
-        depends on (BT_CONTROLLER_DISABLED || (BT_CONTROLLER_ENABLED && SOC_BT_H2C_ENC_KEY_CTRL_ENH_STD_SUPPORTED))
-        bool "Supported by standard HCI command"
+        bool "Supported by standard HCI command (Deprecated)"
+        warning "This option is deprecated and will be removed in a future release"
+        help
+            Deprecated: This option is deprecated and will be removed in a future release.
 
     config BT_ENC_KEY_SIZE_CTRL_VSC
         depends on (BT_CONTROLLER_DISABLED || (BT_CONTROLLER_ENABLED && SOC_BT_H2C_ENC_KEY_CTRL_ENH_VSC_SUPPORTED))
-        bool "Supported by Vendor-specific HCI command"
+        warning "This option is deprecated and will be removed in a future release"
+        bool "Supported by Vendor-specific HCI command (Deprecated)"
+        help
+            Deprecated: This option is deprecated and will be removed in a future release.
 
     config BT_ENC_KEY_SIZE_CTRL_NONE
-        bool "Not supported"
+        bool "Not supported (Deprecated)"
+        warning "This option is deprecated and will be removed in a future release"
+        help
+            Deprecated: This option is deprecated and will be removed in a future release.
 endchoice
+
+config BT_CLASSIC_ENABLE_ENC_KEY_SIZE_CTRL_VSC
+    bool "Supported by Vendor-specific HCI command to set min encryption key size"
+    depends on (BT_CONTROLLER_DISABLED || (BT_CONTROLLER_ENABLED && SOC_BT_H2C_ENC_KEY_CTRL_ENH_VSC_SUPPORTED))
+    default y if BT_ENC_KEY_SIZE_CTRL_VSC # for backward compatibility
+    default n if BT_CONTROLLER_DISABLED
+    default y
+    help
+        This enables vendor-specific command as a fallback
+        when the standard command is not supported.
 
 config BT_CLASSIC_BQB_ENABLED
     bool "Host Qualitifcation support for Classic Bluetooth"
@@ -115,14 +128,36 @@ config BT_A2DP_CODEC_AAC_ENABLED
         Currently, only the A2DP sink supports AAC codec.
 
 config BT_A2DP_SEP_NUM_MAX
-    int "Maximum number of Stream End Points that can be registered for A2DP"
+    int "Maximum number of Stream End Points registered per A2DP connection"
     depends on BT_A2DP_USE_EXTERNAL_CODEC
     default 2 if BT_A2DP_CODEC_AAC_ENABLED
     default 1
     range 1 3
     help
-        The maximum number of Stream End Points (SEPs) that can be registered for A2DP.
-        The default value is 2. If you need to register more SEPs, you can increase this value.
+        Number of Stream End Points (SEPs) that can be registered on a single
+        A2DP connection, i.e. how many codecs one peer can see (SBC only = 1,
+        SBC + AAC = 2). This is not the system-wide SEP pool.
+
+        The AVDTP pool is sized automatically as
+        BT_A2DP_SEP_NUM_MAX * BT_A2DP_SINK_MAX_CONN. Two simultaneous sink
+        connections with SBC and AAC therefore use 4 SEPs without raising
+        this option to 4.
+
+config BT_A2DP_SINK_MAX_CONN
+    int "Maximum number of simultaneous A2DP sink connections"
+    depends on BT_A2DP_ENABLE
+    default 1
+    range 1 2
+    help
+        The maximum number of A2DP source devices that can be connected to the local
+        sink at the same time. When set to 2, the local device behaves like a common
+        Bluetooth speaker: both sources stay connected, but only one of them is the
+        active stream and gets rendered. Media packets of the inactive stream are
+        discarded. Once the active stream is suspended, stopped or closed, the other
+        stream takes over without needing to reconnect.
+
+        Note this requires CONFIG_BT_ACL_CONNECTIONS and the controller BR/EDR ACL
+        connection number to be at least 2.
 
 config BT_AVRCP_ENABLED
     bool
@@ -196,6 +231,35 @@ config BT_SDP_ATTR_LEN
         Any attributes that exceed this size are truncated.
         The default value is 300.
 
+menuconfig BT_OPP_ENABLED
+    bool "OPP (Object Push Profile)"
+    depends on BT_CLASSIC_ENABLED
+    default n
+    help
+        This enables the Object Push Profile over GOEP (OBEX/RFCOMM) for sending
+        and receiving in-memory objects.
+        Currently, only Object Push is supported.
+
+if BT_OPP_ENABLED
+
+    config BT_OPP_SERVER_ENABLED
+        bool "OPP Server"
+        default y
+        select BT_GOEPS_ENABLED
+        help
+            Enable OPP server role (BTA_ID_OPS). Registers a GOEP server over RFCOMM
+            and publishes an OPP SDP record for incoming object push.
+
+    config BT_OPP_CLIENT_ENABLED
+        bool "OPP Client"
+        default y
+        select BT_GOEPC_ENABLED
+        help
+            Enable OPP client role (BTA_ID_OPC). Supports SDP discovery and GOEP PUT
+            to push in-memory objects to a remote OPP server.
+
+endif # BT_OPP_ENABLED
+
 menuconfig BT_HFP_ENABLE
     bool "Hands Free/Handset Profile"
     depends on BT_CLASSIC_ENABLED
@@ -217,13 +281,16 @@ config BT_HFP_AG_ENABLE
 choice BT_HFP_AUDIO_DATA_PATH
     prompt "audio(SCO) data path"
     depends on BT_HFP_ENABLE
+    default BT_HFP_AUDIO_DATA_PATH_HCI if IDF_TARGET_ESP32S31
     help
         SCO data path, i.e. HCI or PCM. This option is set using API
         "esp_bredr_sco_datapath_set" in Bluetooth host. Default SCO data
         path can also be set in Bluetooth Controller.
+        ESP32-S31 does not support PCM SCO routing, so only HCI is available.
 
     config BT_HFP_AUDIO_DATA_PATH_PCM
         bool "PCM"
+        depends on !IDF_TARGET_ESP32S31
     config BT_HFP_AUDIO_DATA_PATH_HCI
         bool "HCI"
 endchoice
@@ -310,6 +377,13 @@ config BT_GOEPC_ENABLED
     default n
     help
         This enables the BT GOEP Profile Client role
+
+config BT_GOEPS_ENABLED
+    bool
+    depends on BT_CLASSIC_ENABLED
+    default n
+    help
+        This enables the BT GOEP Profile Server role
 
 config BT_BLE_ENABLED
     bool "Bluetooth Low Energy"
@@ -424,16 +498,6 @@ config BT_GATTS_SECURITY_LEVELS_CHAR
     default n
     help
         Enable LE GATT Security Levels Characteristic
-
-config BT_GATTS_KEY_MATERIAL_CHAR
-    bool "Enable Encrypted Data Key Material Characteristic"
-    depends on BT_GATTS_ENABLE
-    default n
-    help
-        Enable the Encrypted Data Key Material characteristic in GAP service.
-        This characteristic allows advertising data to be decrypted and authenticated
-        using the key material (session key + IV) as defined in Bluetooth Core
-        Specification Version 5.4. The characteristic requires encrypted link to read.
 
 menuconfig BT_GATTC_ENABLE
     bool "Include GATT client module(GATTC)"
@@ -652,6 +716,36 @@ config BT_BLE_RPA_SUPPORTED
 
         For other BLE chips, devices support network privacy mode and device privacy mode,
         users can switch the two modes according to their own needs. So this option is enabled by default.
+
+menu "Encrypted Advertising Data (EAD)"
+    depends on BT_BLE_ENABLED
+
+    config BT_BLE_FEAT_ENC_ADV_DATA
+        bool "Encrypted Advertising Data APIs"
+        default n
+        help
+            Enable AES-CCM encrypt and decrypt APIs (esp_ble_ead_encrypt /
+            esp_ble_ead_decrypt) for advertising payloads, as defined in
+            Bluetooth Core Specification 5.4. Uses the same cryptographic
+            stack as SMP (TinyCrypt or mbedTLS).
+
+            Enable this alone for a scanner/central that decrypts EAD with a
+            pre-shared key, or when the peer publishes Key Material over GATT.
+
+    config BT_GATTS_KEY_MATERIAL_CHAR
+        bool "Encrypted Data Key Material Characteristic"
+        depends on BT_GATTS_ENABLE
+        select BT_BLE_FEAT_ENC_ADV_DATA
+        default n
+        help
+            Expose session key and IV through the GAP Key Material characteristic
+            (UUID 0x2B88). A central can read it over an encrypted GATT link and
+            then decrypt advertising data with esp_ble_ead_decrypt().
+
+            Selecting this option also enables Encrypted Advertising Data APIs.
+            Set the published key with esp_ble_gap_set_key_material().
+
+endmenu
 
 menu "Bluedroid debug option"
     config BT_BLUEDROID_MEM_DEBUG
@@ -1134,6 +1228,41 @@ menu "BT DEBUG LOG LEVEL"
         default 6 if BT_LOG_AVRC_TRACE_LEVEL_VERBOSE
         default 2
 
+    choice BT_LOG_GOEPS_TRACE_LEVEL
+        prompt "GOEPS layer"
+        default BT_LOG_GOEPS_TRACE_LEVEL_WARNING
+        depends on BT_BLUEDROID_ENABLED && !BT_STACK_NO_LOG
+        help
+            Define BT trace level for GOEPS layer
+
+        config BT_LOG_GOEPS_TRACE_LEVEL_NONE
+            bool "NONE"
+        config BT_LOG_GOEPS_TRACE_LEVEL_ERROR
+            bool "ERROR"
+        config BT_LOG_GOEPS_TRACE_LEVEL_WARNING
+            bool "WARNING"
+        config BT_LOG_GOEPS_TRACE_LEVEL_API
+            bool "API"
+        config BT_LOG_GOEPS_TRACE_LEVEL_EVENT
+            bool "EVENT"
+        config BT_LOG_GOEPS_TRACE_LEVEL_DEBUG
+            bool "DEBUG"
+        config BT_LOG_GOEPS_TRACE_LEVEL_VERBOSE
+            bool "VERBOSE"
+    endchoice
+
+    config BT_LOG_GOEPS_TRACE_LEVEL
+        int
+        depends on BT_BLUEDROID_ENABLED
+        default 0 if BT_LOG_GOEPS_TRACE_LEVEL_NONE
+        default 1 if BT_LOG_GOEPS_TRACE_LEVEL_ERROR
+        default 2 if BT_LOG_GOEPS_TRACE_LEVEL_WARNING
+        default 3 if BT_LOG_GOEPS_TRACE_LEVEL_API
+        default 4 if BT_LOG_GOEPS_TRACE_LEVEL_EVENT
+        default 5 if BT_LOG_GOEPS_TRACE_LEVEL_DEBUG
+        default 6 if BT_LOG_GOEPS_TRACE_LEVEL_VERBOSE
+        default 2
+
     choice BT_LOG_MCA_TRACE_LEVEL
         prompt "MCA layer"
         default BT_LOG_MCA_TRACE_LEVEL_WARNING
@@ -1532,6 +1661,12 @@ config BT_SMP_ENABLE
     bool
     depends on BT_BLUEDROID_ENABLED
     default BT_CLASSIC_ENABLED || BT_BLE_SMP_ENABLE
+
+# No prompt on purpose: menuconfig cannot enable it until the feature is validated.
+config BT_SMP_CTKD_ENABLE
+    bool
+    depends on BT_SMP_ENABLE && BT_CLASSIC_ENABLED && BT_BLE_ENABLED
+    default n
 
 config BT_SMP_MAX_BONDS
     int "BT/BLE maximum bond device count"

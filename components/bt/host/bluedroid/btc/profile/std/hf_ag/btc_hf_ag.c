@@ -203,6 +203,16 @@ static BOOLEAN is_connected(int idx, bt_bdaddr_t *bd_addr)
     return FALSE;
 }
 
+BOOLEAN btc_hf_ag_is_connected(bt_bdaddr_t *bd_addr)
+{
+    int idx = btc_hf_idx_by_bdaddr(bd_addr);
+    if ((idx < 0) || (idx >= BTC_HF_NUM_CB)) {
+        return FALSE;
+    }
+    return is_connected(idx, bd_addr);
+}
+
+#if (BTM_WBS_INCLUDED == TRUE)
 static esp_hf_codec_mode_t btc_hf_bta_codec_to_esp(tBTA_AG_PEER_CODEC codec)
 {
     if (codec == BTA_AG_CODEC_NONE) {
@@ -219,6 +229,7 @@ static esp_hf_codec_mode_t btc_hf_bta_codec_to_esp(tBTA_AG_PEER_CODEC codec)
     }
     return ESP_HF_CODEC_NONE;
 }
+#endif
 
 static tBTA_AG_PEER_CODEC btc_hf_esp_codec_to_bta(esp_hf_codec_mode_t mode)
 {
@@ -1013,10 +1024,10 @@ bt_status_t btc_hf_ci_sco_data(void)
 bt_status_t btc_hf_ag_audio_data_send(uint16_t sync_conn_hdl, uint8_t *p_buff_start, uint8_t *p_data, uint8_t data_len)
 {
 #if (BTM_SCO_HCI_INCLUDED == TRUE) && (BTA_HFP_EXT_CODEC == TRUE)
-    /* currently, sync_conn_hdl is not used */
     int idx = btc_hf_latest_connected_idx();
     CHECK_HF_SLC_CONNECTED(idx);
-    if (idx != BTC_HF_INVALID_IDX) {
+
+    if (sync_conn_hdl != ESP_INVALID_CONN_HANDLE && hf_local_param.btc_hf_cb[idx].sync_conn_hdl == sync_conn_hdl) {
         BTA_AgAudioDataSend(hf_local_param.btc_hf_cb[idx].handle, p_buff_start, p_data, data_len);
         return BT_STATUS_SUCCESS;
     }

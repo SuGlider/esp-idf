@@ -27,6 +27,10 @@
 #include "esp_private/cache_err_int.h"
 #include "hal/uart_ll.h"
 #include "hal/sec_ll.h"
+#include "hal/gdma_ll.h"
+#include "hal/axi_dma_ll.h"
+#include "hal/dma2d_ll.h"
+#include "hal/riscv_trace_hal.h"
 #include "esp_memory_utils.h"
 
 extern int _bss_end;
@@ -42,6 +46,9 @@ extern int _bss_end;
 
 void esp_system_reset_modules_on_exit(void)
 {
+    // A software reset leaves the trace encoders running, and they would write into RAM after restart
+    riscv_trace_hal_stop_all_encoders();
+
     // Flush any data left in UART FIFOs
     for (int i = 0; i < SOC_UART_HP_NUM; ++i) {
         if (uart_ll_is_enabled(i)) {
@@ -49,10 +56,37 @@ void esp_system_reset_modules_on_exit(void)
         }
     }
 
+    // Note: AXI bus doesn't allow an undergoing transaction to be interrupted in the middle
+    // If you want to reset a AXI master, you should make sure that the master is in IDLE first
+    if (gdma_ll_is_bus_clock_enabled(1)) {
+        for (int i = 0; i < GDMA_LL_GET(AXI_PAIRS_PER_GROUP); i++) {
+            axi_dma_ll_tx_abort(AXI_DMA_LL_GET_HW(0), i, true);
+            axi_dma_ll_rx_abort(AXI_DMA_LL_GET_HW(0), i, true);
+            while (!axi_dma_ll_tx_is_reset_avail(AXI_DMA_LL_GET_HW(0), i));
+            while (!axi_dma_ll_rx_is_reset_avail(AXI_DMA_LL_GET_HW(0), i));
+        }
+    }
+    if (dma2d_ll_is_bus_clock_enabled(0)) {
+        for (int i = 0; i < DMA2D_LL_GET(RX_CHANS_PER_INST); i++) {
+            dma2d_ll_rx_abort(DMA2D_LL_GET_HW(0), i, true);
+            while (!dma2d_ll_rx_is_reset_avail(DMA2D_LL_GET_HW(0), i));
+        }
+        for (int i = 0; i < DMA2D_LL_GET(TX_CHANS_PER_INST); i++) {
+            dma2d_ll_tx_abort(DMA2D_LL_GET_HW(0), i, true);
+            while (!dma2d_ll_tx_is_reset_avail(DMA2D_LL_GET_HW(0), i));
+        }
+    }
+
+    // DMA needs to be reset to avoid memory corruption after restart. Now only AHB supports this.
+    // For other AXI DMAs, we have already stop them above.
+    gdma_ll_reset_register(0);
+    gdma_ll_reset_register(2);
+
     CLEAR_PERI_REG_MASK(HP_SYSTEM_ECC_MEM_LP_CTRL_REG, HP_SYSTEM_ECC_MEM_LP_EN);
     SET_PERI_REG_MASK(HP_SYSTEM_ECC_MEM_LP_CTRL_REG, HP_SYSTEM_ECC_MEM_LP_FORCE_CTRL);
-    // Reset the clock source selection to an always-on source (XTAL), otherwise if the clock source
-    // is disabled, will get stuck in ROM encryption related ops.
+
+    // Reset crypto clk mux to XTAL (always-on); otherwise if the parent is gated off,
+    // next-boot ROM encryption ops can hang.
     sec_ll_crypto_clk_src_sel(SOC_MOD_CLK_XTAL);
 }
 

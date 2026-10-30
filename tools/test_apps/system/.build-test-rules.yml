@@ -9,6 +9,7 @@
   depends_components:
     - ulp
     - esp_hw_support
+    - esp_sleep
     - esp_hal_pmu
 
 
@@ -66,11 +67,9 @@ tools/test_apps/system/eh_frame:
     - if: IDF_TARGET in ["esp32", "esp32s2", "esp32s3", "linux"]
       reason: Only relevant for riscv targets
 
-tools/test_apps/system/esp_intr_dump:
-
 tools/test_apps/system/flash_auto_suspend_iram_reduction:
   disable:
-    - if: IDF_TARGET == "esp32" or IDF_TARGET == "esp32s2
+    - if: IDF_TARGET == "esp32" or IDF_TARGET == "esp32s2"
       reason: Targets do not support auto-suspend
   disable_test:
     - if: IDF_TARGET != "esp32c3"
@@ -82,10 +81,15 @@ tools/test_apps/system/g0_components:
     - if: INCLUDE_DEFAULT == 1 or IDF_TARGET in ["esp32h21", "esp32h4", "esp32s31"] # preview targets
 
 tools/test_apps/system/g1_components:
+  disable:
+    - if: IDF_BUILD_V2 == "1"
+      reason: the cmake v2 component closure is checked by g1_components_cmakev2
+
+tools/test_apps/system/g1_components_cmakev2:
 
 tools/test_apps/system/gdb:
   disable_test:
-    - if: IDF_TARGET in ["esp32p4", "esp32c5", "esp32c61", "esp32s31", "esp32h4"]
+    - if: IDF_TARGET in ["esp32p4", "esp32h4", "esp32h21"]
       temporary: true
       reason: not supported yet # TODO: IDF-13142
 
@@ -94,10 +98,6 @@ tools/test_apps/system/gdb_loadable_elf:
     - if: IDF_TARGET != "esp32"
       temporary: true
       reason: lack of runners
-  disable:
-    - if: IDF_TARGET == "esp32c6" or IDF_TARGET == "esp32h2"
-      temporary: true
-      reason: target esp32c6, esp32h2 is not supported yet
 
 tools/test_apps/system/gdbstub_runtime:
   disable_test:
@@ -160,13 +160,15 @@ tools/test_apps/system/panic/coredump:
   disable:
     - if: CONFIG_NAME in ["coredump_flash_extram_stack_bss", "coredump_flash_extram_stack_heap"] and SOC_SPIRAM_SUPPORTED != 1
     - if: CONFIG_NAME == "coredump_flash_extram_stack_bss_xip" and SOC_SPIRAM_XIP_SUPPORTED != 1
-    - if: IDF_TARGET in ["esp32h21"]
-      temporary: true
-      reason: IDF-11543
+    - if: CONFIG_NAME == "coredump_flash_riscv_trace" and SOC_RISCV_TRACE_SUPPORTED != 1
   depends_components:
     - espcoredump
+    - esp_riscv_trace
     - esp_system
     - spi_flash
+  depends_filepatterns:
+    - components/espcoredump/espcoredump.py
+    - tools/test_apps/system/panic/panic_base/test_panic_util/**/*
 
 tools/test_apps/system/panic/panic_base:
   enable:
@@ -174,7 +176,7 @@ tools/test_apps/system/panic/panic_base:
 
 tools/test_apps/system/psram_stack:
   disable:
-    - if: SOC_PSRAM_SUPPORTED != 1
+    - if: SOC_SPIRAM_SUPPORTED != 1
       reason: PSRAM stack feature requires a target with PSRAM support
 
 tools/test_apps/system/ram_loadable_app:
@@ -198,6 +200,8 @@ tools/test_apps/system/rtc_mem_reserve:
 tools/test_apps/system/startup:
   disable:
     - if: CONFIG_NAME == "main_task_cpu1" and IDF_TARGET not in ["esp32", "esp32s3"]
+    - if: CONFIG_NAME == "spiram_debug_log" and SOC_SPIRAM_SUPPORTED != 1
+      reason: Test requires a target with PSRAM support
 
 tools/test_apps/system/test_api_check:
   disable:
@@ -254,5 +258,5 @@ tools/test_apps/system/unicore_bootloader:
   disable:
     - if: SOC_CPU_CORES_NUM == 1
       reason: the test is only relevant for multicore chips
-    - if: CONFIG_NAME == "unicore_psram" and SOC_PSRAM_SUPPORTED != 1
-    - if: CONFIG_NAME == "multicore_psram" and SOC_PSRAM_SUPPORTED != 1
+    - if: CONFIG_NAME == "unicore_psram" and SOC_SPIRAM_SUPPORTED != 1
+    - if: CONFIG_NAME == "multicore_psram" and SOC_SPIRAM_SUPPORTED != 1

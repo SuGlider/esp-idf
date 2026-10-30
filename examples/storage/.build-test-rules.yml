@@ -2,9 +2,9 @@
 
 examples/storage/custom_flash_driver:
   disable_test:
-    - if: IDF_TARGET == "esp32h4"
+    - if: IDF_TARGET in ["esp32h4", "esp32h21"] # TODO: IDF-15601, IDF-16195
       temporary: true
-      reason: cannot pass # TODO: IDF-15601
+      reason: cannot pass
   depends_components:
     - spi_flash
 
@@ -17,6 +17,21 @@ examples/storage/emmc:
   enable:
     - if: IDF_TARGET in ["esp32s3", "esp32p4"]
       reason: only support on esp32s3 and esp32p4
+
+examples/storage/generic_partition_bdl:
+  depends_components:
+    - esp_blockdev
+    - esp_blockdev_util
+    - esp_partition
+    - fatfs
+    - vfs
+    - sdmmc
+    - esp_driver_sdmmc
+    - esp_driver_sdspi
+    - esp_driver_spi
+  disable_test:
+    - if: IDF_TARGET != "esp32"
+      reason: only one target needed
 
 examples/storage/partition_api/partition_find:
   depends_components:

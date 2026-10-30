@@ -135,11 +135,14 @@ esp_err_t esp_create_mbedtls_handle(const char *hostname, size_t hostlen, const 
     mbedtls_ssl_init(&tls->ssl);
     mbedtls_ssl_config_init(&tls->conf);
 
-#if CONFIG_MBEDTLS_DYNAMIC_BUFFER
-    tls->esp_tls_dyn_buf_strategy = ((esp_tls_cfg_t *)cfg)->esp_tls_dyn_buf_strategy;
-#endif
-
     if (tls->role == ESP_TLS_CLIENT) {
+#if CONFIG_MBEDTLS_DYNAMIC_BUFFER
+        /* esp_tls_dyn_buf_strategy is a client-only field. Reading it from a
+         * server configuration (esp_tls_cfg_server_t) would access memory past
+         * the end of that object. tls is calloc'd, so the server path keeps a
+         * defined default of 0 (strategy disabled). */
+        tls->esp_tls_dyn_buf_strategy = ((esp_tls_cfg_t *)cfg)->esp_tls_dyn_buf_strategy;
+#endif
         esp_ret = set_client_config(hostname, hostlen, (esp_tls_cfg_t *)cfg, tls);
         if (esp_ret != ESP_OK) {
             ESP_LOGE(TAG, "Failed to set client configurations, returned [0x%04X] (%s)", esp_ret, esp_err_to_name(esp_ret));
@@ -301,11 +304,22 @@ int esp_mbedtls_handshake(esp_tls_t *tls, const esp_tls_cfg_t *cfg)
             ESP_INT_EVENT_TRACKER_CAPTURE(tls->error_handle, ESP_TLS_ERR_TYPE_MBEDTLS, -ret);
             ESP_INT_EVENT_TRACKER_CAPTURE(tls->error_handle, ESP_TLS_ERR_TYPE_ESP, ESP_ERR_MBEDTLS_SSL_HANDSHAKE_FAILED);
             if (cfg->crt_bundle_attach != NULL || cfg->cacert_buf != NULL || cfg->use_global_ca_store == true) {
-                if (mbedtls_ssl_get_peer_cert(&tls->ssl) != NULL) {
-                    /* This is to check whether handshake failed due to invalid certificate*/
+                /* Check whether the handshake failed because of an invalid certificate.
+                 * Three values are not certificate failures:
+                 * - 0xFFFFFFFF is the initial value of verify_result. mbedTLS sets it in
+                 *   mbedtls_ssl_session_init() to mark the result as not available, and also
+                 *   returns it when the session context is absent.
+                 * - 0 means that the peer certificate passed verification, and that the
+                 *   handshake failed for a different reason.
+                 * - MBEDTLS_X509_BADCERT_SKIP_VERIFY means that mbedTLS did not verify a
+                 *   certificate at all. A TLS 1.3 handshake that resumes a session uses a
+                 *   PSK key exchange, and mbedTLS marks the result as skipped. */
+                uint32_t verify_result = mbedtls_ssl_get_verify_result(&tls->ssl);
+                if (verify_result != 0 && verify_result != 0xFFFFFFFF
+                        && verify_result != MBEDTLS_X509_BADCERT_SKIP_VERIFY) {
                     esp_mbedtls_verify_certificate(tls);
                 } else {
-                    ESP_LOGD(TAG, "Skipping certificate verification - no peer certificate received");
+                    ESP_LOGD(TAG, "Skipping certificate verification - handshake did not fail on the peer certificate");
                 }
             }
             tls->conn_state = ESP_TLS_FAIL;
@@ -747,6 +761,23 @@ void esp_mbedtls_server_session_ticket_ctx_free(esp_tls_server_session_ticket_ct
 }
 #endif
 
+/**
+ * @brief Apply a user-provided list of TLS supported groups to an mbedtls configuration.
+ *
+ * The list is owned by the caller. mbedtls keeps the pointer, it does not copy the array,
+ * so the array must stay valid for the lifetime of the connection.
+ * An empty list is treated as "not configured", because mbedtls reads a zero-terminated array.
+ */
+static void set_groups_list(mbedtls_ssl_config *conf, const uint16_t *groups_list)
+{
+    if (groups_list == NULL || groups_list[0] == MBEDTLS_SSL_IANA_TLS_GROUP_NONE) {
+        ESP_LOGD(TAG, "No custom supported groups provided - using default");
+        return;
+    }
+    ESP_LOGD(TAG, "Set the supported groups list (user-provided)");
+    mbedtls_ssl_conf_groups(conf, groups_list);
+}
+
 static esp_err_t set_server_config(esp_tls_cfg_server_t *cfg, esp_tls_t *tls)
 {
     assert(cfg != NULL);
@@ -954,6 +985,8 @@ static esp_err_t set_server_config(esp_tls_cfg_server_t *cfg, esp_tls_t *tls)
     } else {
         ESP_LOGD(TAG, "No custom cipher suites provided - using default");
     }
+    set_groups_list(&tls->conf, cfg->groups_list);
+
     return ESP_OK;
 }
 
@@ -1195,9 +1228,12 @@ esp_err_t set_client_config(const char *hostname, size_t hostlen, esp_tls_cfg_t 
         }
 
 #if CONFIG_MBEDTLS_SSL_PROTO_TLS1_3
+#if SOC_ECDSA_SUPPORT_CURVE_P384
         if (tls->ecdsa_curve == ESP_TLS_ECDSA_CURVE_SECP384R1) {
             ecdsa_peripheral_supported_ciphersuites[ciphersuite_count++] = MBEDTLS_TLS1_3_AES_256_GCM_SHA384;
-        } else {
+        } else
+#endif
+        {
             ecdsa_peripheral_supported_ciphersuites[ciphersuite_count++] = MBEDTLS_TLS1_3_AES_128_GCM_SHA256;
         }
 #endif
@@ -1233,6 +1269,8 @@ esp_err_t set_client_config(const char *hostname, size_t hostlen, esp_tls_cfg_t 
         ESP_LOGD(TAG, "Set the ciphersuites list");
         mbedtls_ssl_conf_ciphersuites(&tls->conf, cfg->ciphersuites_list);
     }
+    set_groups_list(&tls->conf, cfg->groups_list);
+
     return ESP_OK;
 }
 
@@ -1386,6 +1424,11 @@ void esp_mbedtls_free_global_ca_store(void)
 const int *esp_mbedtls_get_ciphersuites_list(void)
 {
     return mbedtls_ssl_list_ciphersuites();
+}
+
+const uint16_t *esp_mbedtls_get_supported_groups_list(void)
+{
+    return mbedtls_ssl_get_supported_group_list();
 }
 
 #ifdef CONFIG_ESP_TLS_USE_DS_PERIPHERAL

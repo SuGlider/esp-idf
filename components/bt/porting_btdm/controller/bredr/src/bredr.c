@@ -53,6 +53,7 @@
 #include "btdm_osal.h"
 #include "btdm_endian.h"
 #include "btdm_external.h"
+#include "bredr_mempool.h"
 #if CONFIG_BT_SMP_CRYPTO_STACK_MBEDTLS
 #include "psa/crypto.h"
 #endif
@@ -128,12 +129,24 @@ extern int bredr_ctrl_feat_coex_en(void);
 extern int bredr_ctrl_feat_sam_en(void);
 extern int bredr_ctrl_feat_mws_en(void);
 
+#ifdef CONFIG_BT_BLUEDROID_ENABLED
+extern void bt_stack_enableSecCtrlVsCmd(bool en);
+#endif // CONFIG_BT_BLUEDROID_ENABLED
+#if UC_BR_EDR_POWER_CTRL_VSC_ENABLED
+extern void bt_stack_enablePwrCtrlVsCmd(bool en);
+#endif // UC_BR_EDR_POWER_CTRL_VSC_ENABLED
+
+#if UC_BR_EDR_DYNAMIC_TX_PWR_EN
+extern int bredr_ctrl_tx_pwr_configure_en(void);
+extern int bredr_ctrl_configure_acl_dft_tx_pwr(int8_t min, int8_t max);
+extern int bredr_ctrl_read_acl_dft_tx_pwr(int8_t *min, int8_t *max);
+#endif // UC_BR_EDR_DYNAMIC_TX_PWR_EN
+
+extern void bredr_ctrl_get_btdm_info(uint32_t *version, uint32_t *size);
 extern const char *co_orca_get_git_version_str(void);
 extern void r_orca_log_set_printf(bredr_log_printf_fn printf_fn);
 /* Shutdown */
 extern void bredr_controller_shutdown(void);
-
-extern esp_bt_controller_status_t s_btdm_controller_status;
 
 #if CONFIG_FREERTOS_USE_TICKLESS_IDLE
 extern const sleep_retention_entries_config_t *r_bredr_mac_retention_link_get(uint8_t *size);
@@ -295,6 +308,41 @@ static int bredr_psa_gen_keypair(bool p256, uint8_t *public_key, uint8_t *privat
     return 0;
 }
 
+/*
+ * CVE-2018-5383: validate the peer's public key is a valid point on the curve
+ * before using it in the DH computation. PSA validates the point (rejects the
+ * point at infinity and out-of-range coordinates) when importing it as a public key.
+ */
+static int bredr_psa_validate_peer_pubkey(bool p256, const uint8_t *peer_pub_key_x, const uint8_t *peer_pub_key_y)
+{
+    const size_t coord_len = p256 ? BREDR_P256_COORD_LEN : BREDR_P192_COORD_LEN;
+    const size_t pub_len = p256 ? BREDR_PUB_KEY_LEN_P256 : BREDR_PUB_KEY_LEN_P192;
+
+    uint8_t pk[BREDR_PUB_KEY_LEN_P256];  /* uncompressed: 0x04 || X || Y */
+
+    pk[0] = 0x04;
+    btdm_swap_buf(&pk[1], peer_pub_key_x, coord_len);
+    btdm_swap_buf(&pk[1 + coord_len], peer_pub_key_y, coord_len);
+
+    psa_key_attributes_t pub_attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_key_id_t pub_key_id = 0;
+    psa_status_t pub_status;
+
+    psa_set_key_type(&pub_attr, PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_R1));
+    psa_set_key_bits(&pub_attr, p256 ? 256 : 192);
+    psa_set_key_usage_flags(&pub_attr, 0);
+
+    pub_status = psa_import_key(&pub_attr, pk, pub_len, &pub_key_id);
+    psa_reset_key_attributes(&pub_attr);
+    if (pub_status != PSA_SUCCESS) {
+        ESP_LOGE(TAG_BREDR_CRYPTO, "invalid peer public key: psa_import_key failed: %d", (int)pub_status);
+        return -1;
+    }
+
+    psa_destroy_key(pub_key_id);
+    return 0;
+}
+
 static int bredr_psa_gen_dhkey(bool p256, const uint8_t *peer_pub_key_x, const uint8_t *peer_pub_key_y,
                                const uint8_t *our_priv_key, uint8_t *out_dhkey)
 {
@@ -306,10 +354,17 @@ static int bredr_psa_gen_dhkey(bool p256, const uint8_t *peer_pub_key_x, const u
     uint8_t pk[65];
     uint8_t dh[32];
 
-    btdm_swap_buf(priv, our_priv_key, priv_len);
+    /* Validate the peer's public key before using it in the DH computation. */
+    if (bredr_psa_validate_peer_pubkey(p256, peer_pub_key_x, peer_pub_key_y) != 0) {
+        return -1;
+    }
+
+    /* Reconstruct the peer public key in uncompressed form (0x04 || X || Y). */
     pk[0] = 0x04;
     btdm_swap_buf(&pk[1], peer_pub_key_x, coord_len);
     btdm_swap_buf(&pk[1 + coord_len], peer_pub_key_y, coord_len);
+
+    btdm_swap_buf(priv, our_priv_key, priv_len);
 
     psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
     psa_key_id_t key_id = 0;
@@ -587,20 +642,6 @@ const char *bredr_controller_get_compile_version(void)
     return co_orca_get_git_version_str();
 }
 
-orca_mempool_t tlsf_create_with_pool(void *mem, size_t pool_bytes, size_t max_bytes);
-void tlsf_destroy(orca_mempool_t tlsf);
-void *tlsf_malloc(orca_mempool_t tlsf, size_t size);
-void tlsf_free(orca_mempool_t tlsf, void *ptr);
-size_t tlsf_block_size(void *ptr);
-size_t tlsf_alloc_overhead(void);
-
-struct orca_mempool_ops s_orca_mempool_ops = {
-    .create_with_pool = tlsf_create_with_pool,
-    .destroy = NULL,
-    .malloc = tlsf_malloc,
-    .free = tlsf_free,
-};
-
 static int bredr_ctrl_setup_callback(void)
 {
     int ret = 0;
@@ -709,6 +750,14 @@ static int bredr_ctrl_setup_callback(void)
             break;
         }
 #endif /* CONFIG_SW_COEXIST_ENABLE */
+
+#if UC_BR_EDR_DYNAMIC_TX_PWR_EN
+        ret = bredr_ctrl_tx_pwr_configure_en();
+        if (ret != 0) {
+            ESP_LOGE(BREDR_LOG_TAG, "bredr_ctrl_tx_pwr_configure_en failed, ret:%d", ret);
+            break;
+        }
+#endif /* UC_BR_EDR_DYNAMIC_TX_PWR_EN */
     } while (0);
 
     return ret;
@@ -810,6 +859,48 @@ esp_err_t esp_bredr_tx_power_range_get(int8_t *min_power, int8_t *max_power)
     return ESP_OK;
 }
 
+#if UC_BR_EDR_DYNAMIC_TX_PWR_EN
+esp_err_t esp_bredr_acl_dft_tx_power_range_set(int8_t min_power, int8_t max_power)
+{
+    esp_bt_controller_status_t status = esp_bt_controller_get_status();
+    if (status != ESP_BT_CONTROLLER_STATUS_INITED && status != ESP_BT_CONTROLLER_STATUS_ENABLED) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (min_power > max_power) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    int8_t chip_min = 0;
+    int8_t chip_max = 0;
+    esp_err_t err = esp_bredr_tx_power_range_get(&chip_min, &chip_max);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (min_power < chip_min || max_power > chip_max) {
+        ESP_LOGE(BREDR_LOG_TAG, "ACL tx power range [%d, %d] dBm out of supported range [%d, %d] dBm",
+                 min_power, max_power, chip_min, chip_max);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    return bredr_ctrl_configure_acl_dft_tx_pwr(min_power, max_power) == 0 ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t esp_bredr_acl_dft_tx_power_range_get(int8_t *min_power, int8_t *max_power)
+{
+    esp_bt_controller_status_t status = esp_bt_controller_get_status();
+    if (status != ESP_BT_CONTROLLER_STATUS_INITED && status != ESP_BT_CONTROLLER_STATUS_ENABLED) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (min_power == NULL || max_power == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    return bredr_ctrl_read_acl_dft_tx_pwr(min_power, max_power) == 0 ? ESP_OK : ESP_FAIL;
+}
+#endif // UC_BR_EDR_DYNAMIC_TX_PWR_EN
+
 /* Check a single configured TX power value against [min_power, max_power]. */
 static bool bredr_check_tx_pwr(const char *name, int8_t value, int8_t min_power, int8_t max_power)
 {
@@ -874,7 +965,15 @@ int esp_bredr_controller_init(esp_bt_controller_config_t *cfg)
     bredr_register_ext_dep_callback(bredr_ctrl_ext_dep_callback);
 
     cfg->bredr.mempool_size = 1024 * (cfg->bredr.max_acl_conn + 2);
-    cfg->bredr.mempool_ops = &s_orca_mempool_ops;
+    cfg->bredr.mempool_ops = bredr_mempool_ops_get();
+
+    uint32_t bredr_btdm_version = 0;
+    uint32_t bredr_btdm_size = 0;
+    bredr_ctrl_get_btdm_info(&bredr_btdm_version, &bredr_btdm_size);
+    if ((cfg->btdm.version != bredr_btdm_version) || (sizeof(esp_bt_ctrl_btdm_config_t) != bredr_btdm_size)) {
+        ESP_LOGE(BREDR_LOG_TAG, "btdm version used by bredr check failed, version:%x, size:%d", bredr_btdm_version, bredr_btdm_size);
+        return ESP_ERR_INVALID_VERSION;
+    }
 
     status = bredr_controller_init(&cfg->bredr);
     if (status != 0) {
@@ -899,12 +998,23 @@ void bredr_stack_deinit(void)
 
 int bredr_stack_enable(void)
 {
+#ifdef CONFIG_BT_BLUEDROID_ENABLED
+    bt_stack_enableSecCtrlVsCmd(true);
+#endif // CONFIG_BT_BLUEDROID_ENABLED
+#if UC_BR_EDR_POWER_CTRL_VSC_ENABLED
+    bt_stack_enablePwrCtrlVsCmd(true);
+#endif // UC_BR_EDR_POWER_CTRL_VSC_ENABLED
     return 0;
 }
 
 void bredr_stack_disable(void)
 {
-
+#ifdef CONFIG_BT_BLUEDROID_ENABLED
+    bt_stack_enableSecCtrlVsCmd(false);
+#endif // CONFIG_BT_BLUEDROID_ENABLED
+#if UC_BR_EDR_POWER_CTRL_VSC_ENABLED
+    bt_stack_enablePwrCtrlVsCmd(false);
+#endif // UC_BR_EDR_POWER_CTRL_VSC_ENABLED
 }
 
 int bredr_stack_reset(void)
@@ -915,7 +1025,7 @@ int bredr_stack_reset(void)
 }
 
 #if CONFIG_FREERTOS_USE_TICKLESS_IDLE
-esp_err_t sleep_modem_bredr_mac_modem_state_init(void)
+esp_err_t sleep_modem_bredr_mac_retention_create(void)
 {
     uint8_t size;
     const sleep_retention_entries_config_t *bredr_mac_modem_config = r_bredr_mac_retention_link_get(&size);

@@ -6,6 +6,7 @@
 #include "sdkconfig.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <inttypes.h>
 #include <time.h>
@@ -618,6 +619,152 @@ TEST_CASE("Can delete timer from callback", "[esp_timer]")
 
     vSemaphoreDelete(args.notify_from_timer_cb);
 }
+
+#if CONFIG_ESP_TIMER_SUPPORTS_ISR_DISPATCH_METHOD && CONFIG_ESP_TIMER_TASK_AFFINITY_CPU1 && CONFIG_ESP_TIMER_ISR_AFFINITY_CPU0
+// Put the dispatcher and the task which reclaims timers on different cores.
+// A TASK timer proves that the timer task ran while the ISR callback was held.
+typedef struct {
+    esp_timer_handle_t timer;
+    SemaphoreHandle_t done;
+    atomic_bool entered;
+    atomic_bool release;
+    atomic_bool finished;
+    atomic_bool epilogue_done;
+    bool self_delete;
+    bool periodic;
+    bool timed_out;
+    esp_err_t delete_result;
+    esp_err_t stop_result;
+    bool heap_ok;
+} test_isr_delete_state_t;
+
+static void test_isr_delete_callback(void *arg)
+{
+    test_isr_delete_state_t *state = arg;
+    if (state->self_delete) {
+        if (state->periodic) {
+            state->stop_result = esp_timer_stop(state->timer);
+        }
+        state->delete_result = esp_timer_delete(state->timer);
+    }
+    atomic_store(&state->entered, true);
+    // Fail the test before the default 300 ms interrupt watchdog expires.
+    int64_t deadline = esp_timer_get_time() + 100000;
+    while (!atomic_load(&state->release)) {
+        if (esp_timer_get_time() >= deadline) {
+            state->timed_out = true;
+            break;
+        }
+    }
+    atomic_store(&state->finished, true);
+}
+
+static void test_isr_delete_release(void *arg)
+{
+    test_isr_delete_state_t *state = arg;
+    atomic_store(&state->release, true);
+}
+
+static void test_isr_delete_epilogue_done(void *arg)
+{
+    test_isr_delete_state_t *state = arg;
+    atomic_store(&state->epilogue_done, true);
+}
+
+static void test_isr_delete_task(void *arg)
+{
+    test_isr_delete_state_t *state = arg;
+    esp_timer_handle_t release_timer;
+    esp_timer_handle_t epilogue_timer;
+    const esp_timer_create_args_t epilogue_args = {
+        .callback = test_isr_delete_epilogue_done,
+        .arg = state,
+        .dispatch_method = ESP_TIMER_ISR,
+        .name = "after_delete",
+    };
+    const esp_timer_create_args_t release_args = {
+        .callback = test_isr_delete_release,
+        .arg = state,
+        .name = "delete_release",
+    };
+    const esp_timer_create_args_t timer_args = {
+        .callback = test_isr_delete_callback,
+        .arg = state,
+        .dispatch_method = ESP_TIMER_ISR,
+        .name = "delete_in_flight",
+    };
+    TEST_ESP_OK(esp_timer_create(&release_args, &release_timer));
+    TEST_ESP_OK(esp_timer_create(&epilogue_args, &epilogue_timer));
+    TEST_ESP_OK(esp_timer_create(&timer_args, &state->timer));
+    if (state->periodic) {
+        TEST_ESP_OK(esp_timer_start_periodic(state->timer, 10000));
+    } else {
+        TEST_ESP_OK(esp_timer_start_once(state->timer, 1000));
+    }
+    // CPU0 cannot advance the FreeRTOS tick while its ISR callback is held.
+    // Poll on CPU1 without blocking on that tick.
+    while (!atomic_load(&state->entered)) {
+        esp_rom_delay_us(1);
+    }
+    if (!state->self_delete) {
+        if (state->periodic) {
+            state->stop_result = esp_timer_stop(state->timer);
+        }
+        state->delete_result = esp_timer_delete(state->timer);
+    }
+    // The hardware alarm ISR is still executing the victim callback on CPU0,
+    // so it cannot notify the timer task about a new TASK alarm. Wake the timer
+    // task directly after both the deletion event and release timer are due.
+    // On the unfixed implementation, it frees the victim before releasing ISR.
+    TEST_ESP_OK(esp_timer_start_once(release_timer, 1));
+    esp_rom_delay_us(10);
+    xTaskNotifyGive(esp_timer_impl_get_timer_task_handle());
+    while (!atomic_load(&state->finished)) {
+        esp_rom_delay_us(1);
+    }
+    // The next ISR callback on CPU0 cannot run until the victim callback's
+    // dispatcher has finished its epilogue.
+    TEST_ESP_OK(esp_timer_start_once(epilogue_timer, 100));
+    while (!atomic_load(&state->epilogue_done)) {
+        vTaskDelay(1);
+    }
+    TEST_ESP_OK(esp_timer_stop_blocking(epilogue_timer, pdMS_TO_TICKS(1000)));
+    TEST_ESP_OK(esp_timer_delete(epilogue_timer));
+    TEST_ESP_OK(esp_timer_stop_blocking(release_timer, pdMS_TO_TICKS(1000)));
+    TEST_ESP_OK(esp_timer_delete(release_timer));
+    // Let deferred task-context deletion finish before heap inspection.
+    vTaskDelay(3);
+    state->heap_ok = heap_caps_check_integrity_all(true);
+    xSemaphoreGive(state->done);
+    vTaskDelete(NULL);
+}
+
+TEST_CASE("ISR timer deletion defers free until callback epilogue", "[esp_timer]")
+{
+    for (int self_delete = 0; self_delete < 2; ++self_delete) {
+        for (int periodic = 0; periodic < 2; ++periodic) {
+            test_isr_delete_state_t state = {
+                .done = xSemaphoreCreateBinary(),
+                .self_delete = self_delete,
+                .periodic = periodic,
+                .delete_result = ESP_FAIL,
+                .stop_result = ESP_OK,
+            };
+            TEST_ASSERT_NOT_NULL(state.done);
+            TEST_ASSERT_EQUAL(pdPASS, xTaskCreatePinnedToCore(test_isr_delete_task, "isr_delete", 4096, &state, 5, NULL, 1));
+            TEST_ASSERT_TRUE(xSemaphoreTake(state.done, pdMS_TO_TICKS(2000)));
+            printf("ISR delete case self=%d periodic=%d release=%d finished=%d epilogue=%d timeout=%d delete=%d\n",
+                   self_delete, periodic, atomic_load(&state.release), atomic_load(&state.finished),
+                   atomic_load(&state.epilogue_done), state.timed_out, state.delete_result);
+            TEST_ASSERT_FALSE(state.timed_out);
+            TEST_ESP_OK(state.stop_result);
+            TEST_ESP_OK(state.delete_result);
+            TEST_ASSERT_TRUE(state.heap_ok);
+            vSemaphoreDelete(state.done);
+        }
+    }
+}
+#endif
 
 typedef struct {
     SemaphoreHandle_t delete_start;
@@ -1691,4 +1838,285 @@ TEST_CASE("esp_timer_stop_blocking from timer callback and does not block", "[es
     vSemaphoreDelete(state.stop_called_from_cb);
     vSemaphoreDelete(state.callback_can_finish);
     vSemaphoreDelete(state.callback_finished);
+}
+
+typedef struct {
+    volatile int fire_count;
+    volatile int64_t fire_time_us;
+} timer_observation_t;
+
+static void record_timer_fire(void* arg)
+{
+    timer_observation_t* observation = (timer_observation_t*) arg;
+    observation->fire_time_us = esp_timer_get_time();
+    observation->fire_count++;
+}
+
+static bool time_is_in_range(uint64_t time_us, uint64_t earliest_us, uint64_t latest_us)
+{
+    return time_us >= earliest_us && time_us <= latest_us;
+}
+
+static bool time_is_within(int64_t actual_us, int64_t expected_us, int64_t tolerance_us)
+{
+    return actual_us >= expected_us - tolerance_us && actual_us <= expected_us + tolerance_us;
+}
+
+TEST_CASE("esp_timer_get_period reports period and rejects invalid arguments", "[esp_timer]")
+{
+    esp_timer_handle_t timer;
+    const esp_timer_create_args_t args = {
+        .callback = &dummy_cb,
+        .name = "period",
+    };
+    TEST_ESP_OK(esp_timer_create(&args, &timer));
+
+    uint64_t period_us = UINT64_MAX;
+    TEST_ESP_OK(esp_timer_start_once(timer, 400 * 1000));
+    TEST_ESP_OK(esp_timer_get_period(timer, &period_us));
+    TEST_ASSERT_TRUE(period_us == 0);
+    TEST_ESP_OK(esp_timer_stop(timer));
+
+    const uint64_t expected_period_us = 250 * 1000;
+    TEST_ESP_OK(esp_timer_start_periodic(timer, expected_period_us));
+    TEST_ESP_OK(esp_timer_get_period(timer, &period_us));
+    TEST_ASSERT_TRUE(period_us == expected_period_us);
+    TEST_ESP_OK(esp_timer_stop(timer));
+
+    TEST_ESP_ERR(ESP_ERR_INVALID_ARG, esp_timer_get_period(NULL, &period_us));
+    TEST_ESP_ERR(ESP_ERR_INVALID_ARG, esp_timer_get_period(timer, NULL));
+
+    TEST_ESP_OK(esp_timer_delete(timer));
+    vTaskDelay(3);
+}
+
+TEST_CASE("esp_timer_get_expiry_time returns the one-shot deadline and validates arguments", "[esp_timer]")
+{
+    esp_timer_handle_t timer;
+    const esp_timer_create_args_t args = {
+        .callback = &dummy_cb,
+        .name = "expiry",
+    };
+    TEST_ESP_OK(esp_timer_create(&args, &timer));
+
+    const uint64_t timeout_us = 500 * 1000;
+    int64_t before_start_us = esp_timer_get_time();
+    TEST_ESP_OK(esp_timer_start_once(timer, timeout_us));
+    int64_t after_start_us = esp_timer_get_time();
+    uint64_t expiry_us = 0;
+    TEST_ESP_OK(esp_timer_get_expiry_time(timer, &expiry_us));
+    TEST_ASSERT_TRUE(time_is_in_range(expiry_us,
+                                      before_start_us + timeout_us,
+                                      after_start_us + timeout_us));
+    TEST_ESP_OK(esp_timer_stop(timer));
+
+    TEST_ESP_ERR(ESP_ERR_INVALID_ARG, esp_timer_get_expiry_time(NULL, &expiry_us));
+    TEST_ESP_ERR(ESP_ERR_INVALID_ARG, esp_timer_get_expiry_time(timer, NULL));
+
+    TEST_ESP_OK(esp_timer_start_periodic(timer, 200 * 1000));
+    TEST_ESP_ERR(ESP_ERR_NOT_SUPPORTED, esp_timer_get_expiry_time(timer, &expiry_us));
+    TEST_ESP_OK(esp_timer_stop(timer));
+
+    TEST_ESP_OK(esp_timer_delete(timer));
+    vTaskDelay(3);
+}
+
+TEST_CASE("absolute one-shot fires at its deadline and start APIs reject past deadlines", "[esp_timer]")
+{
+    const uint64_t deadline_delay_us = 300 * 1000;
+    const uint64_t expired_deadline_us = 1;
+    volatile int callback_count = 0;
+    esp_timer_handle_t timer;
+    const esp_timer_create_args_t args = {
+        .callback = &test_timer_triggered,
+        .arg = (void*) &callback_count,
+        .name = "once_at",
+    };
+    TEST_ESP_OK(esp_timer_create(&args, &timer));
+
+    uint64_t deadline_us = esp_timer_get_time() + deadline_delay_us;
+    TEST_ESP_OK(esp_timer_start_once_at(timer, deadline_us));
+
+    vTaskDelay(pdMS_TO_TICKS(80));
+    TEST_ASSERT_EQUAL(0, callback_count);
+    vTaskDelay(pdMS_TO_TICKS(400));
+    TEST_ASSERT_EQUAL(1, callback_count);
+
+    TEST_ESP_ERR(ESP_ERR_INVALID_ARG, esp_timer_start_once_at(timer, expired_deadline_us));
+    TEST_ESP_ERR(ESP_ERR_INVALID_ARG, esp_timer_start_periodic_at(timer, 100 * 1000, expired_deadline_us));
+
+    TEST_ESP_OK(esp_timer_delete(timer));
+    vTaskDelay(3);
+}
+
+TEST_CASE("esp_timer_restart_at reschedules a one-shot and rejects a past deadline", "[esp_timer]")
+{
+    const uint64_t initial_timeout_us = 2 * 1000 * 1000;
+    const uint64_t deadline_delay_us = 300 * 1000;
+    const uint64_t expired_deadline_us = 1;
+    volatile int callback_count = 0;
+    esp_timer_handle_t timer;
+    const esp_timer_create_args_t args = {
+        .callback = &test_timer_triggered,
+        .arg = (void*) &callback_count,
+        .name = "restart_at",
+    };
+    TEST_ESP_OK(esp_timer_create(&args, &timer));
+
+    TEST_ESP_OK(esp_timer_start_once(timer, initial_timeout_us));
+    uint64_t deadline_us = esp_timer_get_time() + deadline_delay_us;
+    TEST_ESP_OK(esp_timer_restart_at(timer, 0, deadline_us));
+
+    vTaskDelay(pdMS_TO_TICKS(80));
+    TEST_ASSERT_EQUAL(0, callback_count);
+    vTaskDelay(pdMS_TO_TICKS(400));
+    TEST_ASSERT_EQUAL(1, callback_count);
+
+    TEST_ESP_OK(esp_timer_start_once(timer, initial_timeout_us));
+    TEST_ESP_ERR(ESP_ERR_INVALID_ARG, esp_timer_restart_at(timer, 0, expired_deadline_us));
+    TEST_ESP_OK(esp_timer_stop(timer));
+
+    TEST_ESP_OK(esp_timer_delete(timer));
+    vTaskDelay(3);
+}
+
+TEST_CASE("wake-up alarm skips timers configured to skip unhandled events", "[esp_timer]")
+{
+    const uint64_t short_delay_us = 200 * 1000;
+    const uint64_t long_delay_us = 800 * 1000;
+    const int64_t alarm_tolerance_us = 80 * 1000;
+    esp_timer_handle_t non_wake_timer;
+    esp_timer_handle_t wake_timer;
+    const esp_timer_create_args_t non_wake_args = {
+        .callback = &dummy_cb,
+        .name = "non_wake",
+        .skip_unhandled_events = true,
+    };
+    const esp_timer_create_args_t wake_args = {
+        .callback = &dummy_cb,
+        .name = "wake",
+    };
+    TEST_ESP_OK(esp_timer_create(&non_wake_args, &non_wake_timer));
+    TEST_ESP_OK(esp_timer_create(&wake_args, &wake_timer));
+
+    int64_t start_time_us = esp_timer_get_time();
+    TEST_ESP_OK(esp_timer_start_periodic(non_wake_timer, short_delay_us));
+    TEST_ESP_OK(esp_timer_start_once(wake_timer, long_delay_us));
+    TEST_ASSERT_TRUE(time_is_within(esp_timer_get_next_alarm_for_wake_up(),
+                                    start_time_us + long_delay_us,
+                                    alarm_tolerance_us));
+
+    TEST_ESP_OK(esp_timer_stop(non_wake_timer));
+    TEST_ESP_OK(esp_timer_stop(wake_timer));
+
+    start_time_us = esp_timer_get_time();
+    TEST_ESP_OK(esp_timer_start_once(wake_timer, short_delay_us));
+    TEST_ESP_OK(esp_timer_start_periodic(non_wake_timer, long_delay_us));
+    TEST_ASSERT_TRUE(time_is_within(esp_timer_get_next_alarm_for_wake_up(),
+                                    start_time_us + short_delay_us,
+                                    alarm_tolerance_us));
+
+    TEST_ESP_OK(esp_timer_stop(non_wake_timer));
+    TEST_ESP_OK(esp_timer_stop(wake_timer));
+    TEST_ESP_OK(esp_timer_delete(non_wake_timer));
+    TEST_ESP_OK(esp_timer_delete(wake_timer));
+    vTaskDelay(3);
+}
+
+TEST_CASE("stopping the earliest timer rearms the next timer", "[esp_timer]")
+{
+    const int64_t stopped_timer_delay_us = 300 * 1000;
+    const int64_t remaining_timer_delay_us = 900 * 1000;
+    const int64_t fire_time_tolerance_us = 150 * 1000;
+    timer_observation_t stopped = { 0 };
+    timer_observation_t remaining = { 0 };
+    esp_timer_handle_t stopped_timer;
+    esp_timer_handle_t remaining_timer;
+    const esp_timer_create_args_t stopped_args = {
+        .callback = &record_timer_fire,
+        .arg = &stopped,
+        .name = "stopped_early",
+    };
+    const esp_timer_create_args_t remaining_args = {
+        .callback = &record_timer_fire,
+        .arg = &remaining,
+        .name = "remaining_late",
+    };
+    TEST_ESP_OK(esp_timer_create(&stopped_args, &stopped_timer));
+    TEST_ESP_OK(esp_timer_create(&remaining_args, &remaining_timer));
+
+    int64_t start_time_us = esp_timer_get_time();
+    TEST_ESP_OK(esp_timer_start_once(stopped_timer, stopped_timer_delay_us));
+    TEST_ESP_OK(esp_timer_start_once(remaining_timer, remaining_timer_delay_us));
+#if !CONFIG_ESP_TASK_WDT_USE_ESP_TIMER
+    uint64_t alarm_before_stop = esp_timer_impl_get_alarm_reg();
+#endif
+    TEST_ESP_OK(esp_timer_stop(stopped_timer));
+#if !CONFIG_ESP_TASK_WDT_USE_ESP_TIMER
+    TEST_ASSERT_TRUE(alarm_before_stop != esp_timer_impl_get_alarm_reg());
+#endif
+
+    vTaskDelay(pdMS_TO_TICKS(500));
+    TEST_ASSERT_EQUAL(0, stopped.fire_count);
+    TEST_ASSERT_EQUAL(0, remaining.fire_count);
+
+    vTaskDelay(pdMS_TO_TICKS(600));
+    TEST_ASSERT_EQUAL(0, stopped.fire_count);
+    TEST_ASSERT_EQUAL(1, remaining.fire_count);
+    TEST_ASSERT_TRUE(time_is_within(remaining.fire_time_us,
+                                    start_time_us + remaining_timer_delay_us,
+                                    fire_time_tolerance_us));
+
+    TEST_ESP_OK(esp_timer_delete(stopped_timer));
+    TEST_ESP_OK(esp_timer_delete(remaining_timer));
+    vTaskDelay(3);
+}
+
+TEST_CASE("stopping a later timer keeps the earliest timer armed", "[esp_timer]")
+{
+    const int64_t remaining_timer_delay_us = 300 * 1000;
+    const int64_t stopped_timer_delay_us = 900 * 1000;
+    const int64_t fire_time_tolerance_us = 150 * 1000;
+    timer_observation_t remaining = { 0 };
+    timer_observation_t stopped = { 0 };
+    esp_timer_handle_t remaining_timer;
+    esp_timer_handle_t stopped_timer;
+    const esp_timer_create_args_t remaining_args = {
+        .callback = &record_timer_fire,
+        .arg = &remaining,
+        .name = "remaining_early",
+    };
+    const esp_timer_create_args_t stopped_args = {
+        .callback = &record_timer_fire,
+        .arg = &stopped,
+        .name = "stopped_late",
+    };
+    TEST_ESP_OK(esp_timer_create(&remaining_args, &remaining_timer));
+    TEST_ESP_OK(esp_timer_create(&stopped_args, &stopped_timer));
+
+    int64_t start_time_us = esp_timer_get_time();
+    TEST_ESP_OK(esp_timer_start_once(remaining_timer, remaining_timer_delay_us));
+    TEST_ESP_OK(esp_timer_start_once(stopped_timer, stopped_timer_delay_us));
+#if !CONFIG_ESP_TASK_WDT_USE_ESP_TIMER
+    uint64_t alarm_before_stop = esp_timer_impl_get_alarm_reg();
+#endif
+    TEST_ESP_OK(esp_timer_stop(stopped_timer));
+#if !CONFIG_ESP_TASK_WDT_USE_ESP_TIMER
+    TEST_ASSERT_TRUE(alarm_before_stop == esp_timer_impl_get_alarm_reg());
+#endif
+
+    vTaskDelay(pdMS_TO_TICKS(500));
+    TEST_ASSERT_EQUAL(1, remaining.fire_count);
+    TEST_ASSERT_EQUAL(0, stopped.fire_count);
+    TEST_ASSERT_TRUE(time_is_within(remaining.fire_time_us,
+                                    start_time_us + remaining_timer_delay_us,
+                                    fire_time_tolerance_us));
+
+    vTaskDelay(pdMS_TO_TICKS(600));
+    TEST_ASSERT_EQUAL(1, remaining.fire_count);
+    TEST_ASSERT_EQUAL(0, stopped.fire_count);
+
+    TEST_ESP_OK(esp_timer_delete(remaining_timer));
+    TEST_ESP_OK(esp_timer_delete(stopped_timer));
+    vTaskDelay(3);
 }

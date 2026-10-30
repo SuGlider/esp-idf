@@ -3,6 +3,28 @@ System
 
 :link_to_translation:`zh_CN:[中文]`
 
+FreeRTOS
+---------
+
+The legacy ``port_start_app_hook`` is deprecated and will be removed in ESP-IDF v7.0. To preserve the previous execution order, replace it with an ``ESP_PRE_SCHEDULER_HANDLER_REGISTER`` handler at priority ``999``.
+
+.. code-block:: c
+
+    #include "esp_private/esp_sys_event_app_init.h"
+
+    ESP_PRE_SCHEDULER_HANDLER_REGISTER(port_start_app_hook, 999)
+    {
+        // Port-specific startup behavior
+        return ESP_OK;
+    }
+
+Sleep
+-----
+
+The sleep and low-power code (``esp_sleep.h``, light and deep sleep, sleep retention, etc.) has been moved out of the ``esp_hw_support`` component into a new ``esp_sleep`` component. The APIs are unchanged, and ``esp_hw_support`` lists ``esp_sleep`` as a public dependency, so existing projects do not need to be updated. New components using sleep APIs should add ``esp_sleep`` to their ``REQUIRES`` or ``PRIV_REQUIRES``.
+
+The sleep Kconfig options (``CONFIG_ESP_SLEEP_*``) keep their names, but the menu moved from *Component config* > *Hardware Settings* > *Sleep Config* to *Component config* > *Sleep Config*.
+
 OTA Updates
 -----------
 

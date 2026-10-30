@@ -555,23 +555,27 @@ function(idf_build_library library)
 
     idf_library_get_property(component_interfaces_linked "${library}" LIBRARY_COMPONENT_INTERFACES_LINKED)
 
-    # Build -I arguments for the public include dirs of every component in the
-    # linked closure. These are appended to every linker-script preprocess so a
-    # template can #include any component header (e.g. the ULP memory layout
-    # including soc/soc.h) without the component having to know about it.
-    # INCLUDE_DIRS is stored relative to each component's COMPONENT_DIR.
-    set(component_include_flags "")
+    # Write -I arguments for the public include dirs of every component in the
+    # linked closure to a file. Every linker-script preprocess reads the file as
+    # @file so a template can #include any component header (e.g. the ULP memory
+    # layout including soc/soc.h) without the component having to know about
+    # it. On the command line, the arguments can exceed the 8191 character
+    # limit of cmd.exe on Windows. INCLUDE_DIRS is stored relative to each
+    # component's COMPONENT_DIR.
+    set(component_include_args "")
     foreach(ci IN LISTS component_interfaces_linked)
         idf_component_get_property(ci_dir "${ci}" COMPONENT_DIR)
         idf_component_get_property(ci_includes "${ci}" INCLUDE_DIRS)
         foreach(ci_include IN LISTS ci_includes)
             get_filename_component(ci_include_abs "${ci_include}" ABSOLUTE BASE_DIR "${ci_dir}")
-            # Quote the path: the preprocessor invocation splits CFLAGS with
-            # separate_arguments(UNIX_COMMAND), so unquoted paths containing
-            # spaces would fall apart.
-            string(APPEND component_include_flags " -I\"${ci_include_abs}\"")
+            # Quote the path: the preprocessor splits the file at white space,
+            # so unquoted paths containing spaces would fall apart.
+            string(APPEND component_include_args "-I\"${ci_include_abs}\"\n")
         endforeach()
     endforeach()
+    idf_build_get_property(build_dir BUILD_DIR)
+    set(component_includes_file "${build_dir}/linker_script_includes${suffix}")
+    file(GENERATE OUTPUT "${component_includes_file}" CONTENT "${component_include_args}")
 
     # Linker scripts marked MEMORY (the memory-layout base for the link) are
     # emitted as -T before the rest, so section-placement scripts from any
@@ -604,7 +608,7 @@ function(idf_build_library library)
                     idf_component_get_property(script_flags "${component_interface}"
                                                "LINKER_SCRIPT_FLAGS_${script_key}")
                     __preprocess_linker_script("${script}" "${script_out}"
-                                               "${script_flags}" "${component_include_flags}")
+                                               "${script_flags}" "${component_includes_file}")
                     # Add a custom target for the preprocessed script.
                     add_custom_target(${script_target} DEPENDS "${script_out}")
                 endif()
@@ -642,7 +646,7 @@ function(idf_build_library library)
                     idf_component_get_property(template_flags "${component_interface}"
                                                "LINKER_SCRIPT_FLAGS_${template_key}")
                     __preprocess_linker_script("${template}" "${template_out}"
-                                               "${template_flags}" "${component_include_flags}")
+                                               "${template_flags}" "${component_includes_file}")
                 endif()
                 set(template "${template_out}")
             endif()
@@ -932,7 +936,8 @@ endfunction()
         idf_build_generate_metadata([BINARY <binary>]
                                     [EXECUTABLE <executable>]
                                     [OUTPUT_FILE <file>]
-                                    [HINTS_OUTPUT_FILE <file>])
+                                    [HINTS_OUTPUT_FILE <file>]
+                                    [GDBINIT_DIR <dir>])
 
     *BINARY[in,opt]*
 
@@ -954,6 +959,15 @@ endfunction()
         behaviour prevents hint files from different binaries overwriting each
         other in multi-binary projects.
 
+    *GDBINIT_DIR[in,opt]*
+
+        Optional directory for the generated gdbinit files. If not provided,
+        the default location ``<build>/gdbinit`` is used. Multi-executable
+        projects should pass a distinct directory per executable so their
+        gdbinit files do not overwrite each other. Only the per-executable
+        ``symbols``, ``connect`` and ``py_extensions`` files are written here;
+        the project-wide ``prefix_map`` file stays under ``<build>/gdbinit``.
+
     Generate metadata for the specified ``binary`` or ``executable`` target and
     store it in the specified ``OUTPUT_FILE``. If no ``OUTPUT_FILE`` is
     provided, the default location ``<build>/project_description.json`` will be
@@ -961,7 +975,7 @@ endfunction()
 #]]
 function(idf_build_generate_metadata)
     set(options)
-    set(one_value OUTPUT_FILE BINARY EXECUTABLE HINTS_OUTPUT_FILE)
+    set(one_value OUTPUT_FILE BINARY EXECUTABLE HINTS_OUTPUT_FILE GDBINIT_DIR)
     set(multi_value)
     cmake_parse_arguments(ARG "${options}" "${one_value}" "${multi_value}" ${ARGN})
 
@@ -1037,11 +1051,17 @@ function(idf_build_generate_metadata)
     idf_build_get_property(component_interfaces COMPONENT_INTERFACES)
     __get_components_metadata(COMPONENTS "${component_interfaces}" OUTPUT all_component_info_json)
 
-    __generate_gdbinit()
+    if(NOT DEFINED ARG_GDBINIT_DIR)
+        set(ARG_GDBINIT_DIR "${BUILD_DIR}/gdbinit")
+    endif()
+
+    # Each executable produces its own gdbinit output referencing its own ELF.
+    # __generate_gdbinit resolves the ELF path from the executable target.
+    __generate_gdbinit("${ARG_EXECUTABLE}" "${ARG_GDBINIT_DIR}"
+                       gdbinit_files_symbols gdbinit_files_py_extensions gdbinit_files_connect)
+    # prefix_map is project-wide (set once in project.cmake), unlike the
+    # per-executable files returned by __generate_gdbinit above.
     idf_build_get_property(gdbinit_files_prefix_map GDBINIT_FILES_PREFIX_MAP)
-    idf_build_get_property(gdbinit_files_symbols GDBINIT_FILES_SYMBOLS)
-    idf_build_get_property(gdbinit_files_py_extensions GDBINIT_FILES_PY_EXTENSIONS)
-    idf_build_get_property(gdbinit_files_connect GDBINIT_FILES_CONNECT)
     __get_openocd_options(debug_arguments_openocd)
 
     if(NOT DEFINED ARG_OUTPUT_FILE)
@@ -1451,6 +1471,35 @@ function(idf_check_bootloader_size binary)
     partition_table_add_check_bootloader_size_target("${binary}_check_size"
         DEPENDS "${binary_path}"
         BOOTLOADER_BINARY_PATH "${binary_path}")
+    add_dependencies("${binary}" "${binary}_check_size")
+endfunction()
+
+#[[
+.. cmakev2:function:: idf_check_tee_size
+
+    .. code-block:: cmake
+
+        idf_check_tee_size(<binary>)
+
+    *binary[in]*
+
+        Binary image target to which to add a TEE size check.  The
+        ``binary`` target is created by the :cmakev2:ref:`idf_build_binary` or
+        :cmakev2:ref:`idf_sign_binary` function.
+
+    Ensure that the TEE binary image fits within the TEE partition.  The file
+    path of the binary image should be stored in the ``BINARY_PATH`` property
+    of the ``binary`` target.
+#]]
+function(idf_check_tee_size binary)
+    get_target_property(binary_path ${binary} BINARY_PATH)
+    if(NOT binary_path)
+        idf_die("Binary target '${binary}' is missing 'BINARY_PATH' property.")
+    endif()
+
+    partition_table_add_check_tee_size_target("${binary}_check_size"
+        DEPENDS "${binary_path}"
+        TEE_BINARY_PATH "${binary_path}")
     add_dependencies("${binary}" "${binary}_check_size")
 endfunction()
 

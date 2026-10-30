@@ -252,17 +252,6 @@ struct bt_le_per_adv_sync *bt_le_per_adv_sync_find(uint16_t handle)
     return per_adv_sync;
 }
 
-_IDF_ONLY
-struct bt_le_per_adv_sync *bt_le_per_adv_sync_find_safe(uint16_t sync_handle)
-{
-    struct bt_le_per_adv_sync *per_adv_sync = NULL;
-    LOG_DBG("PaSyncFind[%u]", sync_handle);
-    bt_le_host_lock();
-    per_adv_sync = bt_le_per_adv_sync_find(sync_handle);
-    bt_le_host_unlock();
-    return per_adv_sync;
-}
-
 static struct bt_le_per_adv_sync *per_adv_sync_new(void)
 {
     struct bt_le_per_adv_sync *per_adv_sync = NULL;
@@ -320,15 +309,15 @@ int bt_le_per_adv_sync_new(uint16_t sync_handle,
     per_adv_sync->phy = phy;
     per_adv_sync->interval = interval;
     per_adv_sync->conn_handle = conn_handle;
-    per_adv_sync->addr.type = addr_type;
-#if CONFIG_BT_BLUEDROID_ENABLED
-    /* Bluedroid delivers the advertiser address MSB-first, but the lib compares in
-     * on-air/LSB-first order (bt_addr_le_t.a.val). NimBLE already supplies on-air
-     * order, so reverse only here. */
-    sys_memcpy_swap(per_adv_sync->addr.a.val, addr, BT_ADDR_SIZE);
-#else
+    /* Normalize HCI identity types for Zephyr consumers. */
+    if (addr_type == BT_ADDR_LE_PUBLIC_ID) {
+        per_adv_sync->addr.type = BT_ADDR_LE_PUBLIC;
+    } else if (addr_type == BT_ADDR_LE_RANDOM_ID) {
+        per_adv_sync->addr.type = BT_ADDR_LE_RANDOM;
+    } else {
+        per_adv_sync->addr.type = addr_type;
+    }
     memcpy(per_adv_sync->addr.a.val, addr, BT_ADDR_SIZE);
-#endif
 
     LOG_INF("PaSyncAddr[%s]", bt_addr_le_str(&per_adv_sync->addr));
 
@@ -337,24 +326,6 @@ int bt_le_per_adv_sync_new(uint16_t sync_handle,
     }
 
     return 0;
-}
-
-_IDF_ONLY
-int bt_le_per_adv_sync_new_safe(uint16_t sync_handle,
-                                uint8_t sid,
-                                uint8_t phy,
-                                uint16_t interval,
-                                uint8_t addr_type,
-                                const uint8_t addr[6],
-                                uint16_t conn_handle,
-                                struct bt_le_per_adv_sync **out_sync)
-{
-    int err;
-    bt_le_host_lock();
-    err = bt_le_per_adv_sync_new(sync_handle, sid, phy, interval, addr_type,
-                                 addr, conn_handle, out_sync);
-    bt_le_host_unlock();
-    return err;
 }
 
 int bt_le_per_adv_sync_delete(uint16_t sync_handle)
@@ -460,7 +431,8 @@ int bt_le_per_adv_sync_report_recv_listener(uint16_t sync_handle,
 
     per_adv_sync = bt_le_per_adv_sync_find(sync_handle);
     if (per_adv_sync == NULL) {
-        LOG_ERR("PaSyncNotFound[%u]", sync_handle);
+        /* Reports queued before a terminate arrive after the sync is deleted. */
+        LOG_INF("PaSyncNotFound[%u]", sync_handle);
         return -ENODEV;
     }
 
@@ -492,7 +464,8 @@ void hci_le_biginfo_adv_report(struct net_buf *buf)
 
     per_adv_sync = bt_le_per_adv_sync_find(evt->sync_handle);
     if (per_adv_sync == NULL) {
-        LOG_ERR("PaSyncNotFound[%u]", evt->sync_handle);
+        /* Same post-teardown race as the PA report path above. */
+        LOG_INF("PaSyncNotFound[%u]", evt->sync_handle);
         return;
     }
 
@@ -516,47 +489,6 @@ void hci_le_biginfo_adv_report(struct net_buf *buf)
             listener->biginfo(per_adv_sync, &biginfo);
         }
     }
-}
-
-_LIB_ONLY
-int bt_le_scan_start(const struct bt_le_scan_param *param, void *cb)
-{
-    int err = 0;
-
-    if (atomic_test_bit(bt_dev.flags, BT_DEV_SCANNING) == false) {
-#if CONFIG_BT_BLUEDROID_ENABLED
-        ARG_UNUSED(cb);
-        err = bt_le_bluedroid_scan_start(param);
-#else
-        err = bt_le_nimble_scan_start(param, cb);
-#endif
-        if (err == 0) {
-            atomic_set_bit(bt_dev.flags, BT_DEV_SCANNING);
-        }
-    } else {
-        err = -EALREADY;
-    }
-
-    return err;
-}
-
-_LIB_ONLY
-int bt_le_scan_stop(void)
-{
-    int err = 0;
-
-    if (atomic_test_bit(bt_dev.flags, BT_DEV_SCANNING)) {
-#if CONFIG_BT_BLUEDROID_ENABLED
-        err = bt_le_bluedroid_scan_stop();
-#else
-        err = bt_le_nimble_scan_stop();
-#endif
-        if (err == 0) {
-            atomic_clear_bit(bt_dev.flags, BT_DEV_SCANNING);
-        }
-    }
-
-    return err;
 }
 
 static void past_features_set(void)

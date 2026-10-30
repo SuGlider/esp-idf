@@ -68,6 +68,9 @@
 #if BTC_PBA_CLIENT_INCLUDED
 #include "btc_pba_client.h"
 #endif
+#if BTC_OPP_INCLUDED
+#include "btc_opp.h"
+#endif
 #endif /* #if CLASSIC_BT_INCLUDED */
 #endif
 
@@ -172,6 +175,14 @@ static const btc_func_t profile_tab[BTC_PID_NUM] = {
 #endif
 #if BTC_PBA_CLIENT_INCLUDED
     [BTC_PID_PBA_CLIENT]  = {btc_pba_client_call_handler,  btc_pba_client_cb_handler},
+#endif
+#if BTC_OPP_INCLUDED
+#if BTC_OPP_SERVER_INCLUDED
+    [BTC_PID_OPP_SERVER]  = {btc_opp_server_call_handler,  btc_opp_server_cb_handler},
+#endif
+#if BTC_OPP_CLIENT_INCLUDED
+    [BTC_PID_OPP_CLIENT]  = {btc_opp_client_call_handler,  btc_opp_client_cb_handler},
+#endif
 #endif
 #endif /* #if CLASSIC_BT_INCLUDED */
 #endif
@@ -322,6 +333,11 @@ static void btc_thread_handler(void *arg)
 
 static bt_status_t btc_task_post(btc_msg_t *msg, uint32_t timeout)
 {
+    if (btc_thread == NULL) {
+        BTC_TRACE_WARNING("%s btc_thread is NULL\n", __func__);
+        return BT_STATUS_NOT_READY;
+    }
+
     if (osi_thread_post(btc_thread, btc_thread_handler, msg, 0, timeout) == false) {
         return BT_STATUS_BUSY;
     }
@@ -466,6 +482,14 @@ static void btc_deinit_mem(void) {
     }
 #endif
 
+#if BTC_PAN_INCLUDED == TRUE && PAN_DYNAMIC_MEMORY == TRUE
+    if (btc_pan_local_param_ptr) {
+        btc_pan_free_cfg_strings();
+        osi_free(btc_pan_local_param_ptr);
+        btc_pan_local_param_ptr = NULL;
+    }
+#endif
+
 #if BTC_AV_INCLUDED == TRUE && AVRC_DYNAMIC_MEMORY == TRUE
     if (btc_rc_cb_ptr) {
         osi_free(btc_rc_cb_ptr);
@@ -532,11 +556,18 @@ static bt_status_t btc_init_mem(void) {
     memset((void *)hf_client_local_param_ptr, 0, sizeof(hf_client_local_param_t));
 #endif
 
-#if BTC_AV_INCLUDED == TRUE && AVRC_DYNAMIC_MEMORY == TRUE
-    if ((btc_rc_cb_ptr = (btc_rc_cb_t *)osi_malloc(sizeof(btc_rc_cb_t))) == NULL) {
+#if BTC_PAN_INCLUDED == TRUE && PAN_DYNAMIC_MEMORY == TRUE
+    if ((btc_pan_local_param_ptr = (btc_pan_local_param_t *)osi_malloc(sizeof(btc_pan_local_param_t))) == NULL) {
         goto error_exit;
     }
-    memset((void *)btc_rc_cb_ptr, 0, sizeof(btc_rc_cb_t));
+    memset((void *)btc_pan_local_param_ptr, 0, sizeof(btc_pan_local_param_t));
+#endif
+
+#if BTC_AV_INCLUDED == TRUE && AVRC_DYNAMIC_MEMORY == TRUE
+    if ((btc_rc_cb_ptr = (btc_rc_cb_t *)osi_malloc(sizeof(btc_rc_cb_t) * BTC_RC_MAX_CONN)) == NULL) {
+        goto error_exit;
+    }
+    memset((void *)btc_rc_cb_ptr, 0, sizeof(btc_rc_cb_t) * BTC_RC_MAX_CONN);
     if ((bta_av_co_cb_ptr = (tBTA_AV_CO_CB *)osi_malloc(sizeof(tBTA_AV_CO_CB))) == NULL) {
         goto error_exit;
     }

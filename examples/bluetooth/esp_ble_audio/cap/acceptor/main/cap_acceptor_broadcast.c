@@ -11,6 +11,14 @@
 #include <stdbool.h>
 #include <errno.h>
 
+#include "sdkconfig.h"
+
+#if CONFIG_BT_BLUEDROID_ENABLED
+#include "esp_bt_defs.h"
+#else
+#include "nimble/ble.h"
+#endif
+
 #include "cap_acceptor.h"
 
 #if CONFIG_EXAMPLE_SCAN_SELF
@@ -61,21 +69,6 @@ static inline bool flag_test_and_set(uint8_t bit)
     bool was = flag_test(bit);
     flag_set(bit);
     return was;
-}
-
-/* The audio stack keeps addresses on-air (LSB-first) in bt_addr_le_t, Bluedroid takes
- * and reports them MSB-first, NimBLE on-air. Convert whenever one meets the other; the
- * reversal is its own inverse, so this serves both directions.
- */
-static void addr_order_copy(uint8_t dst[6], const uint8_t src[6])
-{
-#if CONFIG_BT_BLUEDROID_ENABLED
-    for (size_t i = 0; i < 6; i++) {
-        dst[i] = src[5 - i];
-    }
-#else
-    memcpy(dst, src, 6);
-#endif
 }
 
 static struct broadcast_sink {
@@ -473,6 +466,8 @@ static void broadcast_stream_recv_cb(esp_ble_audio_bap_stream_t *stream,
         return;
     }
 
+    rx_metrics[idx].last_sdu = data;
+
     rx_metrics[idx].last_sdu_len = len;
     snprintf(obj_name, sizeof(obj_name), "SNK #%u", idx);
     example_audio_rx_metrics_on_recv(info, &rx_metrics[idx], TAG, obj_name);
@@ -585,6 +580,17 @@ static void recv_state_updated_cb(esp_ble_conn_t *conn,
     }
 }
 
+static uint8_t addr_type_bass_to_host(uint8_t type)
+{
+#if CONFIG_BT_BLUEDROID_ENABLED
+    return (type == BT_ADDR_LE_PUBLIC ||
+            type == BT_ADDR_LE_PUBLIC_ID) ? BLE_ADDR_TYPE_PUBLIC : BLE_ADDR_TYPE_RANDOM;
+#else
+    return (type == BT_ADDR_LE_PUBLIC ||
+            type == BT_ADDR_LE_PUBLIC_ID) ? BLE_ADDR_PUBLIC : BLE_ADDR_RANDOM;
+#endif
+}
+
 static int pa_sync_req_cb(esp_ble_conn_t *conn,
                           const esp_ble_audio_bap_scan_delegator_recv_state_t *recv_state,
                           bool past_available, uint16_t pa_interval)
@@ -606,7 +612,8 @@ static int pa_sync_req_cb(esp_ble_conn_t *conn,
 
     if (past_available) {
         err = pa_sync_with_past(conn->handle,
-                                recv_state->addr.type, recv_state->addr.a.val);
+                                addr_type_bass_to_host(recv_state->addr.type),
+                                recv_state->addr.a.val);
         if (err) {
             return -EIO;
         }
@@ -628,9 +635,10 @@ static int pa_sync_req_cb(esp_ble_conn_t *conn,
     } else {
         uint8_t addr[6];
 
-        addr_order_copy(addr, recv_state->addr.a.val);
+        memcpy(addr, recv_state->addr.a.val, sizeof(addr));
 
-        err = pa_sync_create(recv_state->addr.type, addr, recv_state->adv_sid);
+        err = pa_sync_create(addr_type_bass_to_host(recv_state->addr.type),
+                             addr, recv_state->adv_sid);
         if (err) {
             return err;
         }
@@ -769,18 +777,30 @@ static int bis_sync_req_cb(esp_ble_conn_t *conn,
     return 0;
 }
 
+/* BASS address types collapse identity variants to public or random. */
+static uint8_t addr_type_host_to_bass(uint8_t type)
+{
+#if CONFIG_BT_BLUEDROID_ENABLED
+    return (type == BLE_ADDR_TYPE_PUBLIC ||
+            type == BLE_ADDR_TYPE_RPA_PUBLIC) ? BT_ADDR_LE_PUBLIC : BT_ADDR_LE_RANDOM;
+#else
+    return (type == BLE_ADDR_PUBLIC ||
+            type == BLE_ADDR_PUBLIC_ID) ? BT_ADDR_LE_PUBLIC : BT_ADDR_LE_RANDOM;
+#endif
+}
+
 void broadcast_pa_synced(esp_ble_audio_gap_app_event_t *event)
 {
-    bt_addr_le_t addr = {0};
+    uint8_t addr_type = addr_type_host_to_bass(event->pa_sync.addr.type);
+    uint8_t addr[6];
     int err;
 
-    addr.type = event->pa_sync.addr.type;
-    addr_order_copy(addr.a.val, event->pa_sync.addr.val);
+    memcpy(addr, event->pa_sync.addr.val, sizeof(addr));
 
     if (broadcast_sink.sync_handle == PA_SYNC_HANDLE_INIT ||
             (broadcast_sink.recv_state &&
-             broadcast_sink.recv_state->addr.type == addr.type &&
-             memcmp(broadcast_sink.recv_state->addr.a.val, addr.a.val, sizeof(addr.a.val)) == 0 &&
+             broadcast_sink.recv_state->addr.type == addr_type &&
+             memcmp(broadcast_sink.recv_state->addr.a.val, addr, sizeof(addr)) == 0 &&
              broadcast_sink.recv_state->adv_sid == event->pa_sync.sid)) {
         ESP_LOGI(TAG, "PA sync %u synced for broadcast sink", event->pa_sync.sync_handle);
 

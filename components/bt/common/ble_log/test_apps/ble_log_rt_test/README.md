@@ -19,12 +19,12 @@ the hand-over time, so dispatch latency is measured without a real link.
 - `runtime` regressions: shared ESP Timer task fairness, periodic timestamp
   delivery without light-sleep wakeups, ISR-only submission delivery,
   consumer-independent receipt timing, extra-marker detection, exact 1 ms
-  first-submission defer scheduling, full task-pool snapshot dispatch, deinit
+  first-submission defer scheduling, full shared-pool snapshot dispatch, deinit
   racing submissions (SMP-pinned writer, failure-safe recovery), bounded
   inflight-peak statistics, and monotonic millisecond waits at both supported
   tick rates.
 
-The first-deadline and full task-pool regressions require dispatch exclusion
+The first-deadline and full shared-pool regressions require dispatch exclusion
 while enqueueing, so they run on single-core builds only (they are ignored on
 SMP targets). The deinit-race regression pins its writer to the other core on
 SMP.
@@ -65,3 +65,15 @@ python3 ../ble_log_perf_test/tools/parse_perf_log.py capture.log --csv out.csv
 | ----------------- | ----- | -------- | -------- | -------- | -------- | --------- | -------- | --------- | -------- | -------- | -------- | -------- | --------- |
 
 CI builds are temporarily disabled until BLE Log test runners are available.
+
+## Sync marker regression checks
+
+Run from the repository root with Python 3 and a C compiler supporting UBSan:
+
+```bash
+python3 components/bt/common/ble_log/test_apps/ble_log_rt_test/host/run_sync_test.py
+```
+
+The host tests compile the sender with peripheral and clock fakes. They check
+encoding, sampling order, idle spacing, busy/error handling, cleanup and timer
+wrap, using XTAL and REF_TICK clock configurations.

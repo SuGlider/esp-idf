@@ -95,6 +95,88 @@ function(register_ble_log_idf_commit)
     endif()
 endfunction()
 
+# Wire BLE Log USB to TinyUSB CDC: optional-require esp_tinyusb and check
+# that its CDC FIFO sizes match the BLE Log menu values. Called with the
+# bt component's type so the optional requirement follows it.
+function(register_ble_log_usb_transport component_type)
+    if(NOT CONFIG_BLE_LOG_PRPH_USB)
+        return()
+    endif()
+
+    set(tinyusb_component "")
+    foreach(component IN LISTS BUILD_COMPONENTS)
+        if(component MATCHES "esp_tinyusb$")
+            set(tinyusb_component "${component}")
+            break()
+        endif()
+    endforeach()
+    if(NOT tinyusb_component)
+        message(FATAL_ERROR
+            "BLE_LOG_PRPH_USB is enabled but espressif/esp_tinyusb is not "
+            "in the build. Declare it in the project manifest:\n"
+            "  dependencies:\n"
+            "    espressif/esp_tinyusb: \"^2.0.0\"")
+    endif()
+    if(component_type STREQUAL "LIBRARY")
+        idf_component_optional_requires(PRIVATE ${tinyusb_component})
+    else()
+        idf_component_optional_requires(INTERFACE ${tinyusb_component})
+    endif()
+    if(NOT CONFIG_TINYUSB_CDC_ENABLED)
+        message(FATAL_ERROR
+            "BLE_LOG_PRPH_USB requires CONFIG_TINYUSB_CDC_ENABLED")
+    endif()
+    if(NOT CONFIG_TINYUSB_CDC_TX_BUFSIZE EQUAL CONFIG_BLE_LOG_USB_CDC_TX_BUFSIZE)
+        message(FATAL_ERROR
+            "CONFIG_TINYUSB_CDC_TX_BUFSIZE (${CONFIG_TINYUSB_CDC_TX_BUFSIZE}) "
+            "must equal CONFIG_BLE_LOG_USB_CDC_TX_BUFSIZE "
+            "(${CONFIG_BLE_LOG_USB_CDC_TX_BUFSIZE})")
+    endif()
+    if(NOT CONFIG_TINYUSB_CDC_EP_BUFSIZE EQUAL CONFIG_BLE_LOG_USB_CDC_EP_BUFSIZE)
+        message(FATAL_ERROR
+            "CONFIG_TINYUSB_CDC_EP_BUFSIZE (${CONFIG_TINYUSB_CDC_EP_BUFSIZE}) "
+            "must equal CONFIG_BLE_LOG_USB_CDC_EP_BUFSIZE "
+            "(${CONFIG_BLE_LOG_USB_CDC_EP_BUFSIZE})")
+    endif()
+    if(CONFIG_TINYUSB_CDC_RX_BUFSIZE LESS CONFIG_TINYUSB_CDC_EP_BUFSIZE)
+        message(FATAL_ERROR
+            "CONFIG_TINYUSB_CDC_RX_BUFSIZE (${CONFIG_TINYUSB_CDC_RX_BUFSIZE}) "
+            "must be >= CONFIG_TINYUSB_CDC_EP_BUFSIZE "
+            "(${CONFIG_TINYUSB_CDC_EP_BUFSIZE}); TinyUSB treats a smaller RX "
+            "FIFO as a #warning and IDF builds with -Werror")
+    endif()
+endfunction()
+
+function(register_ble_log_usj_transport component_type)
+    if(NOT CONFIG_BLE_LOG_PRPH_USB_SERIAL_JTAG)
+        return()
+    endif()
+    if(CONFIG_BLE_LOG_USJ_BUS_BUSY)
+        message(FATAL_ERROR
+            "BLE_LOG_PRPH_USB_SERIAL_JTAG is set while BLE_LOG_USJ_BUS_BUSY "
+            "is set. Console ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED="
+            "${CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED}, esp_trace "
+            "ESP_TRACE_TRANSPORT_USB_SERIAL_JTAG="
+            "${CONFIG_ESP_TRACE_TRANSPORT_USB_SERIAL_JTAG}, OpenThread RCP "
+            "OPENTHREAD_RCP_USB_SERIAL_JTAG="
+            "${CONFIG_OPENTHREAD_RCP_USB_SERIAL_JTAG}, "
+            "USJ_ENABLE_USB_SERIAL_JTAG="
+            "${CONFIG_USJ_ENABLE_USB_SERIAL_JTAG}.")
+    endif()
+    if(CONFIG_BLE_LOG_POOL_TRANS_SIZE GREATER CONFIG_BLE_LOG_USJ_TX_BUFSIZE)
+        message(FATAL_ERROR
+            "CONFIG_BLE_LOG_POOL_TRANS_SIZE "
+            "(${CONFIG_BLE_LOG_POOL_TRANS_SIZE}) must be <= "
+            "CONFIG_BLE_LOG_USJ_TX_BUFSIZE "
+            "(${CONFIG_BLE_LOG_USJ_TX_BUFSIZE})")
+    endif()
+    if(component_type STREQUAL "LIBRARY")
+        idf_component_optional_requires(PRIVATE esp_driver_usb_serial_jtag)
+    else()
+        idf_component_optional_requires(INTERFACE esp_driver_usb_serial_jtag)
+    endif()
+endfunction()
+
 set(bt_common_srcs "" PARENT_SCOPE)
 set(bt_common_include_dirs "" PARENT_SCOPE)
 set(bt_common_priv_include_dirs "" PARENT_SCOPE)
@@ -170,8 +252,11 @@ list(APPEND bt_common_priv_include_dirs
 if(CONFIG_BLE_LOG_ENABLED)
     list(APPEND bt_common_srcs
         "${CMAKE_CURRENT_LIST_DIR}/ble_log/src/ble_log.c"
-        "${CMAKE_CURRENT_LIST_DIR}/ble_log/src/ble_log_lbm.c"
+        "${CMAKE_CURRENT_LIST_DIR}/ble_log/src/ble_log_lbm_v2.c"
+        "${CMAKE_CURRENT_LIST_DIR}/ble_log/src/ble_log_redir.c"
         "${CMAKE_CURRENT_LIST_DIR}/ble_log/src/ble_log_rt.c"
+        "${CMAKE_CURRENT_LIST_DIR}/ble_log/src/ble_log_sync.c"
+        "${CMAKE_CURRENT_LIST_DIR}/ble_log/src/ble_log_task_registry.c"
         "${CMAKE_CURRENT_LIST_DIR}/ble_log/src/ble_log_util.c"
     )
 
@@ -183,11 +268,6 @@ if(CONFIG_BLE_LOG_ENABLED)
         "${CMAKE_CURRENT_LIST_DIR}/ble_log/src/internal_include"
         "${CMAKE_CURRENT_LIST_DIR}/ble_log/src/internal_include/prph"
     )
-
-    # Timestamp synchronization extension
-    if(CONFIG_BLE_LOG_TS_ENABLED)
-        list(APPEND bt_common_srcs "${CMAKE_CURRENT_LIST_DIR}/ble_log/src/ble_log_ts.c")
-    endif()
 
     # Peripheral interface implementation
     if(CONFIG_BLE_LOG_PRPH_DUMMY)
@@ -209,6 +289,14 @@ if(CONFIG_BLE_LOG_ENABLED)
     elseif(CONFIG_BLE_LOG_PRPH_UART_DMA)
         list(APPEND bt_common_srcs
             "${CMAKE_CURRENT_LIST_DIR}/ble_log/src/prph/ble_log_prph_uart_dma.c"
+        )
+    elseif(CONFIG_BLE_LOG_PRPH_USB)
+        list(APPEND bt_common_srcs
+            "${CMAKE_CURRENT_LIST_DIR}/ble_log/src/prph/ble_log_prph_usb.c"
+        )
+    elseif(CONFIG_BLE_LOG_PRPH_USB_SERIAL_JTAG)
+        list(APPEND bt_common_srcs
+            "${CMAKE_CURRENT_LIST_DIR}/ble_log/src/prph/ble_log_prph_usb_serial_jtag.c"
         )
     endif()
 endif()

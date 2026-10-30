@@ -24,7 +24,7 @@ elseif(BOOTLOADER_BUILD)   # TODO: IDF-11673
 
     idf_component_register(SRCS "${srcs}"
                            INCLUDE_DIRS "${include_dirs}"
-                           PRIV_REQUIRES esp_hal_dma)
+                           PRIV_REQUIRES esp_hal_dma esp_hal_cache)
     if(public_compile_definitions)
         target_compile_definitions(${COMPONENT_LIB} PUBLIC ${public_compile_definitions})
     endif()
@@ -34,7 +34,12 @@ endif()
 if(NOT ${IDF_TARGET} STREQUAL "linux")
     set(priv_requires soc esp_hw_support)
     if(NOT BOOTLOADER_BUILD)
-        list(APPEND priv_requires esp_pm esp_driver_dma)
+        # esp_mspi provides esp_mspi_align, used by the AES and SHA DMA ports
+        list(APPEND priv_requires esp_driver_dma esp_mspi)
+        if(NOT IDF_BUILD_V2)
+            # V1 resolves requirements before Kconfig is available.
+            list(APPEND priv_requires esp_pm)
+        endif()
         set(requires esp_security esp_hal_security)
     endif()
 endif()
@@ -68,6 +73,10 @@ idf_component_register(SRCS "${mbedtls_srcs}"
     PRIV_REQUIRES "${priv_requires}"
     REQUIRES "${requires}"
     )
+
+if(IDF_BUILD_V2 AND CONFIG_PM_ENABLE)
+    idf_component_include(esp_pm)
+endif()
 
 # Add MBEDTLS_MAJOR_VERSION definition to the component library
 target_compile_definitions(${COMPONENT_LIB} INTERFACE MBEDTLS_MAJOR_VERSION=4)
@@ -374,6 +383,7 @@ if((SHA_PERIPHERAL_TYPE STREQUAL "core" AND CONFIG_SOC_SHA_SUPPORT_DMA) OR AES_P
     target_link_libraries(builtin PRIVATE idf::esp_hw_support)
     target_link_libraries(tfpsacrypto PRIVATE idf::esp_mm)
     target_link_libraries(builtin PRIVATE idf::esp_mm)
+    target_link_libraries(tfpsacrypto PRIVATE idf::esp_mspi)
     if(CONFIG_SOC_SHA_GDMA OR CONFIG_SOC_AES_GDMA)
         if(CONFIG_SOC_AXI_DMA_EXT_MEM_ENC_ALIGNMENT)
             target_link_libraries(tfpsacrypto PRIVATE idf::bootloader_support)
@@ -470,8 +480,12 @@ if(CONFIG_SOC_ECC_SUPPORTED)
     endif()
 endif()
 
-if(CONFIG_MBEDTLS_HARDWARE_ECDSA_SIGN OR CONFIG_MBEDTLS_HARDWARE_ECDSA_VERIFY OR CONFIG_MBEDTLS_TEE_SEC_STG_ECDSA_SIGN)
-    target_sources(tfpsacrypto PRIVATE "${COMPONENT_DIR}/port/psa_driver/esp_ecdsa/psa_crypto_driver_esp_ecdsa.c")
+if(CONFIG_MBEDTLS_HARDWARE_ECDSA_SIGN OR CONFIG_MBEDTLS_HARDWARE_ECDSA_VERIFY
+        OR CONFIG_MBEDTLS_TEE_SEC_STG_ECDSA_SIGN)
+    target_sources(tfpsacrypto PRIVATE
+        "${COMPONENT_DIR}/port/psa_driver/esp_ecdsa/psa_crypto_driver_esp_ecdsa.c"
+        "${COMPONENT_DIR}/port/psa_driver/esp_ecdsa/psa_crypto_driver_esp_ecdsa_transparent.c"
+    )
     target_include_directories(tfpsacrypto PUBLIC "${COMPONENT_DIR}/port/psa_driver/include")
     target_link_libraries(tfpsacrypto PRIVATE idf::efuse)
     if(CONFIG_MBEDTLS_TEE_SEC_STG_ECDSA_SIGN)

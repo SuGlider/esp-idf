@@ -38,7 +38,7 @@
 #include "esp_secure_boot.h"
 #include "esp_flash_encrypt.h"
 #include "esp_flash_partitions.h"
-#include "bootloader_flash_priv.h"
+#include "esp_private/bootloader_flash_internal.h"
 #include "bootloader_random.h"
 #include "bootloader_config.h"
 #include "bootloader_common.h"
@@ -552,14 +552,20 @@ void bootloader_utility_load_boot_image_from_deep_sleep(void)
 void bootloader_utility_load_tee_image(const bootloader_state_t *bs)
 {
     esp_err_t err = ESP_FAIL;
-    uint8_t tee_active_part = bootloader_utility_tee_get_boot_partition(&bs->tee_ota_info);
-    if (tee_active_part != PART_SUBTYPE_TEE_0 && tee_active_part != PART_SUBTYPE_TEE_1) {
+
+#ifdef CONFIG_SECURE_TEE_ANTI_ROLLBACK
+    ESP_LOGI(TAG, "TEE secure version (from eFuse) = %"PRIu32, esp_efuse_read_tee_secure_version());
+#endif
+
+    int tee_active_part = bootloader_utility_tee_get_selected_boot_partition(bs);
+    if (tee_active_part < 0) {
         ESP_LOGE(TAG, "Failed to find valid TEE app");
         bootloader_reset();
     }
 
-    uint8_t tee_part_idx = tee_active_part & 0x01;
-    const esp_partition_pos_t *tee_active_part_pos = &bs->tee[tee_part_idx];
+    const esp_partition_pos_t *tee_active_part_pos = &bs->tee[tee_active_part & 0x01];
+    esp_image_tee_offset_set(tee_active_part_pos->offset);
+
     err = bootloader_load_image(tee_active_part_pos, &tee_data);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to load TEE app");
@@ -1067,12 +1073,12 @@ static void set_cache_and_start_app(
     //The addr is aligned, so we add the mask off length to the size, to make sure the corresponding buses are enabled.
     drom_size = (drom_load_addr - drom_load_addr_aligned) + drom_size;
 #if CONFIG_IDF_TARGET_ESP32
-    uint32_t drom_page_count = (drom_size + SPI_FLASH_MMU_PAGE_SIZE - 1) / SPI_FLASH_MMU_PAGE_SIZE;
+    uint32_t drom_page_count = (drom_size + CONFIG_MMU_PAGE_SIZE - 1) / CONFIG_MMU_PAGE_SIZE;
     rc = cache_flash_mmu_set(0, 0, drom_load_addr_aligned, drom_addr_aligned, 64, drom_page_count);
     ESP_EARLY_LOGV(TAG, "rc=%d", rc);
     rc = cache_flash_mmu_set(1, 0, drom_load_addr_aligned, drom_addr_aligned, 64, drom_page_count);
     ESP_EARLY_LOGV(TAG, "rc=%d", rc);
-    ESP_EARLY_LOGV(TAG, "after mapping rodata, starting from paddr=0x%08" PRIx32 " and vaddr=0x%08" PRIx32 ", 0x%" PRIx32 " bytes are mapped", drom_addr_aligned, drom_load_addr_aligned, drom_page_count * SPI_FLASH_MMU_PAGE_SIZE);
+    ESP_EARLY_LOGV(TAG, "after mapping rodata, starting from paddr=0x%08" PRIx32 " and vaddr=0x%08" PRIx32 ", 0x%" PRIx32 " bytes are mapped", drom_addr_aligned, drom_load_addr_aligned, drom_page_count * CONFIG_MMU_PAGE_SIZE);
 #else
     uint32_t actual_mapped_len = 0;
     if (s_flash_seg_needs_map(drom_load_addr_aligned)) {
@@ -1091,12 +1097,12 @@ static void set_cache_and_start_app(
     //The addr is aligned, so we add the mask off length to the size, to make sure the corresponding buses are enabled.
     irom_size = (irom_load_addr - irom_load_addr_aligned) + irom_size;
 #if CONFIG_IDF_TARGET_ESP32
-    uint32_t irom_page_count = (irom_size + SPI_FLASH_MMU_PAGE_SIZE - 1) / SPI_FLASH_MMU_PAGE_SIZE;
+    uint32_t irom_page_count = (irom_size + CONFIG_MMU_PAGE_SIZE - 1) / CONFIG_MMU_PAGE_SIZE;
     rc = cache_flash_mmu_set(0, 0, irom_load_addr_aligned, irom_addr_aligned, 64, irom_page_count);
     ESP_EARLY_LOGV(TAG, "rc=%d", rc);
     rc = cache_flash_mmu_set(1, 0, irom_load_addr_aligned, irom_addr_aligned, 64, irom_page_count);
     ESP_LOGV(TAG, "rc=%d", rc);
-    ESP_EARLY_LOGV(TAG, "after mapping text, starting from paddr=0x%08" PRIx32 " and vaddr=0x%08" PRIx32 ", 0x%" PRIx32 " bytes are mapped", irom_addr_aligned, irom_load_addr_aligned, irom_page_count * SPI_FLASH_MMU_PAGE_SIZE);
+    ESP_EARLY_LOGV(TAG, "after mapping text, starting from paddr=0x%08" PRIx32 " and vaddr=0x%08" PRIx32 ", 0x%" PRIx32 " bytes are mapped", irom_addr_aligned, irom_load_addr_aligned, irom_page_count * CONFIG_MMU_PAGE_SIZE);
 #else
     if (s_flash_seg_needs_map(irom_load_addr_aligned)) {
         mmu_hal_map_region(0, MMU_TARGET_FLASH0, irom_load_addr_aligned, irom_addr_aligned, irom_size, &actual_mapped_len);

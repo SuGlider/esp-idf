@@ -11,172 +11,282 @@
 /* INCLUDE */
 #include "ble_log.h"
 #include "ble_log_rt.h"
-#include "ble_log_lbm.h"
+#include "ble_log_sync.h"
+#include "ble_log_lbm_v2.h"
+#include "ble_log_task_registry.h"
+#include "ble_log_util.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "esp_chip_info.h"
+#include "esp_task.h" /* ESP_TASK_TIMER_PRIO for the USB dispatch task */
 
 /* MACRO */
-#define TAG                                      "ble_log_rt"
+#define TAG                                      "BLE-Log"
 #define BLE_LOG_RT_DEFER_TIMEOUT_US              (1000)
-
-#if CONFIG_BT_CONTROLLER_ENABLED
-#if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32S3
-extern const char *btdm_controller_get_compile_version(void);
-#define BLE_LOG_CONTROLLER_GET_COMMIT() btdm_controller_get_compile_version()
-#elif !CONFIG_BT_DUAL_MODE_ARCH || CONFIG_BT_CTRL_BLE_ENABLE
-/* BR/EDR-only dual-mode builds do not link the BLE controller lib */
-extern char *ble_controller_get_compile_version(void);
-#define BLE_LOG_CONTROLLER_GET_COMMIT() ble_controller_get_compile_version()
-#endif
-#if CONFIG_BT_DUAL_MODE_ARCH
-/* BTDM common lib (dual-mode arch only) */
-extern const char *r_btdm_get_compile_version(void);
-#define BLE_LOG_BTDM_COMMON_GET_COMMIT() r_btdm_get_compile_version()
-#endif
-#endif
-
-#if CONFIG_BLE_MESH && CONFIG_BLE_MESH_V11_SUPPORT
-/* "Bluetooth Mesh v1.1 commit: <hash>" */
-extern const char bt_mesh_v11_commit_str[];
-#endif
-
-#if CONFIG_BT_AUDIO && CONFIG_SOC_BLE_AUDIO_SUPPORTED
-extern const char *lib_audio_commit_get(void);
-#endif
-
-_Static_assert(sizeof(ble_log_version_info_t) == 58,
-               "Unexpected BLE Log version info frame size");
+/* Bounded wait for the USB dispatcher stop handshake (ack plus suspended
+ * state), matching the runtime reference-count wait budget. */
+#define BLE_LOG_RT_STOP_TIMEOUT_MS               (1000)
 
 /* VARIABLE */
 BLE_LOG_STATIC BLE_LOG_DRAM_ATTR uint32_t rt_inited = 0;
 BLE_LOG_STATIC BLE_LOG_DRAM_ATTR volatile uint32_t rt_ref_count = 0;
 BLE_LOG_STATIC BLE_LOG_DRAM_ATTR QueueHandle_t rt_queue_handle = NULL;
+#if CONFIG_BLE_LOG_PRPH_COPY_FIFO
+/* COPY_FIFO builds drain the queue from a dedicated task. The 1 ms defer
+ * cadence would cap throughput at pool-depth x transport-size per
+ * millisecond (~5 MiB/s). Same dispatch function, same
+ * single-dispatcher invariant; the task blocks on the queue so idle cost
+ * is zero. SPI/UART builds keep the deferred esp_timer batch below. */
+BLE_LOG_STATIC BLE_LOG_DRAM_ATTR TaskHandle_t rt_task_handle = NULL;
+/* Teardown completion ack: the task publishes it after it has finished the
+ * transport it owned and drained what the closed gate left behind. The ref
+ * count above cannot cover a dequeued transport. */
+BLE_LOG_STATIC BLE_LOG_DRAM_ATTR uint32_t rt_task_stopped = 0;
+#else
 BLE_LOG_STATIC BLE_LOG_DRAM_ATTR esp_timer_handle_t rt_defer_timer = NULL;
-BLE_LOG_STATIC uint32_t rt_last_hook_os_ts = 0;
-#if CONFIG_BLE_LOG_TS_ENABLED
-BLE_LOG_STATIC BLE_LOG_DRAM_ATTR uint32_t rt_ts_enabled = 0;
-BLE_LOG_STATIC esp_timer_handle_t rt_ts_timer = NULL;
-#endif /* CONFIG_BLE_LOG_TS_ENABLED */
+#endif
+BLE_LOG_STATIC BLE_LOG_DRAM_ATTR esp_timer_handle_t rt_ts_timer = NULL;
 
 /* PRIVATE FUNCTION DECLARATION */
+#if !CONFIG_BLE_LOG_PRPH_COPY_FIFO
 BLE_LOG_STATIC void ble_log_rt_defer_cb(void *arg);
-BLE_LOG_STATIC bool ble_log_rt_dispatch(QueueHandle_t queue, UBaseType_t pending);
-BLE_LOG_STATIC void ble_log_rt_run_hook(void);
-#if CONFIG_BLE_LOG_TS_ENABLED
+BLE_LOG_STATIC void ble_log_rt_dispatch(QueueHandle_t queue,
+                                        UBaseType_t pending);
+#else
+BLE_LOG_STATIC void ble_log_rt_task(void *pvParameters);
+#endif
 BLE_LOG_STATIC void ble_log_rt_ts_trigger(void *arg);
-#endif /* CONFIG_BLE_LOG_TS_ENABLED */
+BLE_LOG_STATIC void ble_log_rt_report_loss(void);
 
 /* PRIVATE FUNCTION */
-/* Copies a NUL-terminated commit string into a fixed-width zero-padded field */
-BLE_LOG_STATIC void ble_log_commit_copy(uint8_t *dst, const char *src, size_t len)
+BLE_LOG_STATIC void ble_log_rt_report_loss(void)
 {
-    BLE_LOG_MEMCPY(dst, src, strnlen(src, len));
-}
+    uint32_t by_source[BLE_LOG_SRC_MAX];
+    ble_log_lbm_take_loss_window(by_source);
 
-BLE_LOG_STATIC void ble_log_rt_run_hook(void)
-{
-    uint32_t now = pdTICKS_TO_MS(xTaskGetTickCount());
-    if ((uint32_t)(now - rt_last_hook_os_ts) < BLE_LOG_TS_TRIGGER_TIMEOUT_MS) {
+    uint32_t total = 0;
+    for (int i = 0; i < BLE_LOG_SRC_MAX; i++) {
+        total += by_source[i];
+    }
+#if CONFIG_BLE_LOG_PRPH_COPY_FIFO
+    uint32_t tx_ring_drops = 0;
+    uint32_t tx_ring_dropped_bytes = 0;
+    ble_log_prph_take_tx_ring_drops(&tx_ring_drops, &tx_ring_dropped_bytes);
+#else
+    const uint32_t tx_ring_drops = 0;
+    const uint32_t tx_ring_dropped_bytes = 0;
+#endif
+    if (total == 0 && tx_ring_drops == 0 && tx_ring_dropped_bytes == 0) {
         return;
     }
-    rt_last_hook_os_ts = now;
 
-    /* Write version info: BLE Log version, idf commit (build-time),
-     * linked-in BLE lib commits, chip model/revision (efuse, runtime-only).
-     * Libs absent from the build leave their fields zero. */
-    ble_log_version_info_t version_info = {
-        .int_src_code = BLE_LOG_INT_SRC_VERSION_INFO,
-        .version = BLE_LOG_VERSION,
-    };
-#ifdef BLE_LOG_IDF_COMMIT
-    BLE_LOG_MEMCPY(version_info.idf_commit, BLE_LOG_IDF_COMMIT, BLE_LOG_IDF_COMMIT_LEN);
-#endif
-#if CONFIG_BT_CONTROLLER_ENABLED && defined(BLE_LOG_CONTROLLER_GET_COMMIT)
-    ble_log_commit_copy(version_info.controller_commit, BLE_LOG_CONTROLLER_GET_COMMIT(),
-                        BLE_LOG_LIB_COMMIT_LEN);
-#endif
-#if CONFIG_BT_CONTROLLER_ENABLED && defined(BLE_LOG_BTDM_COMMON_GET_COMMIT)
-    ble_log_commit_copy(version_info.btdm_common_commit, BLE_LOG_BTDM_COMMON_GET_COMMIT(),
-                        BLE_LOG_LIB_COMMIT_LEN);
-#endif
-#if CONFIG_BLE_MESH && CONFIG_BLE_MESH_V11_SUPPORT
-    /* The hash is the substring after the last space of the lib string */
-    const char *mesh_commit = strrchr(bt_mesh_v11_commit_str, ' ');
-    if (mesh_commit) {
-        ble_log_commit_copy(version_info.mesh_commit, mesh_commit + 1,
-                            BLE_LOG_LIB_COMMIT_LEN);
+    /* Fixed scratch, assembled field by field; no dynamic allocation on
+     * the timer task. Only non-zero sources appear, one src-<code>=<count>
+     * entry each (source code as the plain numeric wire ID). */
+    if (total != 0) {
+        char line[160];
+        int pos = snprintf(line, sizeof(line), "Lost %lu frames",
+                           (unsigned long)total);
+        for (int i = 0;
+             i < BLE_LOG_SRC_MAX && pos > 0 && (size_t)pos < sizeof(line) - 1;
+             i++) {
+            if (by_source[i] == 0) {
+                continue;
+            }
+            int written = snprintf(line + pos, sizeof(line) - pos,
+                                   ", src-%u=%lu",
+                                   i, (unsigned long)by_source[i]);
+            if (written < 0) {
+                break;
+            }
+            pos += written;
+        }
+        ESP_LOGW(TAG, "%s", line);
     }
-#endif
-#if CONFIG_BT_AUDIO && CONFIG_SOC_BLE_AUDIO_SUPPORTED
-    ble_log_commit_copy(version_info.audio_commit, lib_audio_commit_get(),
-                        BLE_LOG_LIB_COMMIT_LEN);
-#endif
-    esp_chip_info_t chip_info;
-    esp_chip_info(&chip_info);
-    version_info.chip_model = (uint16_t)chip_info.model;
-    version_info.chip_revision = chip_info.revision;
-    ble_log_write_hex(BLE_LOG_SRC_INTERNAL, (const uint8_t *)&version_info,
-                      sizeof(version_info));
-
-    ble_log_write_enh_stat();
-    ble_log_write_buf_util();
+    if (tx_ring_drops != 0 || tx_ring_dropped_bytes != 0) {
+        ESP_LOGW(TAG,
+                 "Lost %lu transport(s), %lu byte(s): TX ring full "
+                 "after USB output (frames already sealed, not written)",
+                 (unsigned long)tx_ring_drops,
+                 (unsigned long)tx_ring_dropped_bytes);
+    }
 }
-
-BLE_LOG_STATIC bool ble_log_rt_dispatch(QueueHandle_t queue, UBaseType_t pending)
+#if !CONFIG_BLE_LOG_PRPH_COPY_FIFO
+/* Dispatch only the queue depth observed at callback entry. A backend may
+ * recycle synchronously on queue-full while another core immediately refills
+ * the runtime queue; an unbounded loop here could starve every other callback
+ * on the shared ESP timer task. */
+BLE_LOG_STATIC void ble_log_rt_dispatch(QueueHandle_t queue,
+                                        UBaseType_t pending)
 {
     ble_log_prph_trans_t *trans = NULL;
-    bool processed = false;
     while (pending-- && xQueueReceive(queue, &trans, 0) == pdTRUE) {
         ble_log_prph_send_trans(trans);
-        processed = true;
     }
-    return processed;
+}
+#endif /* !CONFIG_BLE_LOG_PRPH_COPY_FIFO */
+
+#if CONFIG_BLE_LOG_PRPH_COPY_FIFO
+#if CONFIG_BLE_LOG_USB_DISPATCH_TEST_HOOKS
+/* Test-only injection point, defined by the USB test app: pauses the
+ * dispatcher between dequeue and send so the teardown handshake can be
+ * checked deterministically. */
+extern void ble_log_test_usb_dispatch_pre_send_hook(void) __attribute__((weak));
+/* Test-only injection point, defined by the USB test app: pauses the
+ * dispatcher between the stop ack and its own suspend, the window in which
+ * deinit must keep waiting. */
+extern void ble_log_test_usb_dispatch_post_ack_hook(void) __attribute__((weak));
+#endif /* CONFIG_BLE_LOG_USB_DISPATCH_TEST_HOOKS */
+
+/* Dedicated dispatch task for USB builds: event-driven queue drain. The
+ * blocking receive is mandatory for light-sleep support (the queue read is
+ * the wake source).
+ *
+ * The task holds no stop state of its own: deinit closes the gate and posts
+ * the stop token (see ble_log_rt_stop_task), which the receive below reads as
+ * "stop". It then recycles whatever the closed gate left in the queue and
+ * publishes rt_task_stopped, so that ack covers both the transport it owned
+ * and the ones still queued. It suspends instead of deleting itself: deinit
+ * keeps waiting for the ack and the suspended state, and a task handle must
+ * not outlive the TCB the idle task frees. */
+BLE_LOG_STATIC void ble_log_rt_task(void *pvParameters)
+{
+    (void)pvParameters;
+    ble_log_prph_trans_t *trans = NULL;
+    while (xQueueReceive(rt_queue_handle, &trans, portMAX_DELAY) == pdTRUE) {
+        if (trans == NULL) {
+            /* The stop token deinit posted. Must precede the gate check: the
+             * recycle below dereferences the transport. */
+            ESP_LOGI(TAG,
+                     "Stop token: draining %u queued transport(s), then acking",
+                     (unsigned)uxQueueMessagesWaiting(rt_queue_handle));
+            break;
+        }
+        if (!BLE_LOG_ATOMIC_LOAD_ACQUIRE(rt_inited)) {
+            /* Deinit is tearing down; recycle and keep draining. */
+            ble_log_lbm_recycle_trans(trans);
+            continue;
+        }
+#if CONFIG_BLE_LOG_USB_DISPATCH_TEST_HOOKS
+        if (ble_log_test_usb_dispatch_pre_send_hook) {
+            ble_log_test_usb_dispatch_pre_send_hook();
+        }
+#endif /* CONFIG_BLE_LOG_USB_DISPATCH_TEST_HOOKS */
+        ble_log_prph_send_trans(trans);
+    }
+
+    /* Reached on the stop token with the gate already closed, so nothing here
+     * was submitted after the gate: drain and ack. */
+    while (xQueueReceive(rt_queue_handle, &trans, 0) == pdTRUE) {
+        ble_log_lbm_recycle_trans(trans);
+    }
+    BLE_LOG_ATOMIC_STORE_RELEASE(rt_task_stopped, 1);
+#if CONFIG_BLE_LOG_USB_DISPATCH_TEST_HOOKS
+    if (ble_log_test_usb_dispatch_post_ack_hook) {
+        ble_log_test_usb_dispatch_post_ack_hook();
+    }
+#endif /* CONFIG_BLE_LOG_USB_DISPATCH_TEST_HOOKS */
+    vTaskSuspend(NULL);
 }
 
+/* Stop handshake state: the ack says the dispatch work is done, the suspended
+ * state says the task is out of the scheduler's way. Deinit needs both before
+ * it deletes the handle (see ble_log_rt_stop_task). */
+BLE_LOG_STATIC bool ble_log_rt_stopped(void)
+{
+    return BLE_LOG_ATOMIC_LOAD_ACQUIRE(rt_task_stopped) &&
+           (eTaskGetState(rt_task_handle) == eSuspended);
+}
+
+/* Wake the dispatcher and wait until it is stopped.
+ *
+ * Both conditions are needed before the handle is safe to delete, and they are
+ * not the same instant: the ack only says the task finished the transport it
+ * owned and the queue; it then still has to reach the suspended state. On SMP
+ * deinit can win the kernel lock between the ack and the task's own
+ * vTaskSuspend(), which puts the task on the termination list - and the task's
+ * vTaskSuspend() then moves its state list item from that list to the
+ * suspended list (tasks.c), leaving the TCB unfreed and the kernel's
+ * deleted-task count stuck above zero. Nothing resumes a suspended task, so
+ * the state is stable once observed.
+ *
+ * The wake is a NULL token in the runtime queue, not an abort poke: the
+ * dispatcher can be blocked inside its dispatch call, where xTaskAbortDelay
+ * would also cancel a wait on one of TinyUSB's own mutexes. TinyUSB takes
+ * those with a forever timeout and ignores the result, so a cancelled take
+ * leaves it giving back a mutex it never acquired. The token can only be
+ * taken by the receive at the top of the loop. The whole wait shares the
+ * timeout the reference count wait uses. */
+BLE_LOG_STATIC bool ble_log_rt_stop_task(void)
+{
+    /* The reserved queue slot makes this unconditional: at most one entry per
+     * transport can be queued at once, and the gate is closed and the
+     * reference count drained before this runs. */
+    ble_log_prph_trans_t *stop_token = NULL;
+    if (xQueueSend(rt_queue_handle, &stop_token, 0) != pdTRUE) {
+        return false;
+    }
+
+    TickType_t start_tick = xTaskGetTickCount();
+    while (!ble_log_rt_stopped()) {
+        if ((xTaskGetTickCount() - start_tick) >=
+                pdMS_TO_TICKS(BLE_LOG_RT_STOP_TIMEOUT_MS)) {
+            return false;
+        }
+        vTaskDelay(1);
+    }
+    return true;
+}
+
+#else
 BLE_LOG_STATIC void ble_log_rt_defer_cb(void *arg)
 {
     (void)arg;
 
+    /* Deinit clears the queue only after stop_blocking has waited for this
+     * callback, so a live gate implies a live queue. */
     if (!BLE_LOG_ATOMIC_LOAD_ACQUIRE(rt_inited)) {
         return;
     }
 
     QueueHandle_t queue = rt_queue_handle;
-    if (!queue) {
-        return;
-    }
+    ble_log_rt_dispatch(queue, uxQueueMessagesWaiting(queue));
 
-    UBaseType_t pending = uxQueueMessagesWaiting(queue);
-    if (ble_log_rt_dispatch(queue, pending)) {
-        ble_log_rt_run_hook();
-    }
-
-    pending = uxQueueMessagesWaiting(queue);
-    if (pending &&
+    /* A submit racing an active one-shot callback may fail to arm it. If the
+     * bounded batch left work behind, schedule another turn after yielding
+     * the shared timer task to callbacks that are already due. */
+    if (uxQueueMessagesWaiting(queue) &&
             ble_log_ref_count_try_acquire(&rt_ref_count, &rt_inited)) {
-        (void)esp_timer_start_once(rt_defer_timer, BLE_LOG_RT_DEFER_TIMEOUT_US);
+        (void)esp_timer_start_once(rt_defer_timer,
+                                   BLE_LOG_RT_DEFER_TIMEOUT_US);
         BLE_LOG_REF_COUNT_RELEASE(&rt_ref_count);
     }
 }
+#endif /* CONFIG_BLE_LOG_PRPH_COPY_FIFO */
 
-#if CONFIG_BLE_LOG_TS_ENABLED
 BLE_LOG_STATIC void ble_log_rt_ts_trigger(void *arg)
 {
     (void)arg;
-    if (!BLE_LOG_ATOMIC_LOAD_ACQUIRE(rt_inited) ||
-        !BLE_LOG_ATOMIC_LOAD_ACQUIRE(rt_ts_enabled)) {
+    if (!BLE_LOG_ATOMIC_LOAD_ACQUIRE(rt_inited)) {
         return;
     }
 
-    ble_log_ts_info_t *ts_info = NULL;
-    ble_log_ts_info_update(&ts_info);
-    if (ts_info) {
-        ble_log_write_hex(BLE_LOG_SRC_INTERNAL, (const uint8_t *)ts_info, sizeof(ble_log_ts_info_t));
-    }
+    /* Unified periodic output: best-effort flush of partially-filled OPEN
+     * transports ahead of the periodic snapshot, so parked frames do not
+     * wait for the next capacity seal. The task-id binding broadcast
+     * rides the same window, ahead of the snapshot, on its own dedicated
+     * transport: a receiver that missed a binding converges on the next
+     * one, and the snapshot never waits behind it. */
+    ble_log_lbm_flush_open_trans();
+    ble_log_task_bindings_publish();
+
+    (void)ble_log_internal_snapshot(
+        BLE_LOG_SNAPSHOT_REASON_PERIODIC |
+        BLE_LOG_SNAPSHOT_REASON_TS_VALID,
+        NULL, false);
+
+    ble_log_rt_report_loss();
 }
-#endif /* CONFIG_BLE_LOG_TS_ENABLED */
 
 /* INTERFACE */
 bool ble_log_rt_init(void)
@@ -185,11 +295,33 @@ bool ble_log_rt_init(void)
         return true;
     }
 
-    rt_queue_handle = xQueueCreate(BLE_LOG_TRANS_TOTAL_CNT, sizeof(ble_log_prph_trans_t *));
+#if CONFIG_BLE_LOG_TS_SYNC_TOGGLE_IO_ENABLED
+    if (!ble_log_sync_init()) {
+        ESP_LOGW(TAG, "External time sync unavailable; continuing BLE Log without sync output (see BLE-Log-Sync error)");
+    }
+#endif
+
+    /* One slot per transport, so every transport the peripheral can hold fits
+     * in the queue at once and submit never blocks or drops, plus one reserved
+     * slot for the NULL stop token deinit posts (the only non-transport entry
+     * this queue ever carries). */
+    rt_queue_handle = xQueueCreate(BLE_LOG_TRANS_TOTAL_CNT + 1,
+                                   sizeof(ble_log_prph_trans_t *));
     if (!rt_queue_handle) {
         goto exit;
     }
 
+#if CONFIG_BLE_LOG_PRPH_COPY_FIFO
+    /* Queue must be initialized before creating the task. The priority
+     * matches the esp_timer task so dispatch keeps the scheduling position
+     * of the deferred-callback design it replaces. */
+    BLE_LOG_ATOMIC_STORE_RELEASE(rt_task_stopped, 0);
+    if (xTaskCreate(ble_log_rt_task, "ble_log_rt",
+                    CONFIG_BLE_LOG_RT_TASK_STACK_SIZE, NULL,
+                    ESP_TASK_TIMER_PRIO, &rt_task_handle) != pdTRUE) {
+        goto exit;
+    }
+#else
     esp_timer_create_args_t defer_timer_args = {
         .callback = ble_log_rt_defer_cb,
         .dispatch_method = ESP_TIMER_TASK,
@@ -200,9 +332,10 @@ bool ble_log_rt_init(void)
     if (esp_timer_create(&defer_timer_args, &rt_defer_timer) != ESP_OK) {
         goto exit;
     }
+#endif /* CONFIG_BLE_LOG_PRPH_COPY_FIFO */
 
-#if CONFIG_BLE_LOG_TS_ENABLED
-    BLE_LOG_ATOMIC_STORE_RELAXED(rt_ts_enabled, false);
+    /* Create the system-periodic path here; the top-level init starts it only
+     * after queuing INIT, then it runs through deinit. */
     esp_timer_create_args_t ts_timer_args = {
         .callback = ble_log_rt_ts_trigger,
         .arg = NULL,
@@ -211,19 +344,31 @@ bool ble_log_rt_init(void)
         /* Do not wake light sleep or replay every missed periodic callback. */
         .skip_unhandled_events = true,
     };
-    if (esp_timer_create(&ts_timer_args, &rt_ts_timer) != ESP_OK ||
-        esp_timer_start_periodic(rt_ts_timer, BLE_LOG_TS_TRIGGER_TIMEOUT_US) != ESP_OK) {
+    if (esp_timer_create(&ts_timer_args, &rt_ts_timer) != ESP_OK) {
         goto exit;
     }
-#endif /* CONFIG_BLE_LOG_TS_ENABLED */
 
-    rt_last_hook_os_ts = 0;
     BLE_LOG_ATOMIC_STORE_RELEASE(rt_inited, true);
     return true;
 
 exit:
     ble_log_rt_deinit();
     return false;
+}
+
+bool ble_log_rt_start_periodic(void)
+{
+    bool started = false;
+    if (!ble_log_ref_count_try_acquire(&rt_ref_count, &rt_inited)) {
+        return false;
+    }
+    if (rt_ts_timer &&
+            esp_timer_start_periodic(rt_ts_timer,
+                                     BLE_LOG_TS_TRIGGER_TIMEOUT_US) == ESP_OK) {
+        started = true;
+    }
+    BLE_LOG_REF_COUNT_RELEASE(&rt_ref_count);
+    return started;
 }
 
 void ble_log_rt_deinit(void)
@@ -236,30 +381,62 @@ void ble_log_rt_deinit(void)
         ESP_LOGE(TAG, "Timed out waiting for BLE Log runtime references");
         BLE_LOG_ASSERT(false);
     }
-#if CONFIG_BLE_LOG_TS_ENABLED
-    BLE_LOG_ATOMIC_STORE_RELEASE(rt_ts_enabled, false);
-    if (rt_ts_timer) {
-        esp_timer_stop_blocking(rt_ts_timer, portMAX_DELAY);
-        esp_timer_delete(rt_ts_timer);
-        rt_ts_timer = NULL;
+#if CONFIG_BLE_LOG_PRPH_COPY_FIFO
+    /* Dispatcher teardown first: it must be quiescent before the tail report
+     * below samples the TX ring drop counters it updates, and before the
+     * pool and the peripheral go away.
+     *
+     * Quiescence comes from the gate plus an ack, not from vTaskDelete: the
+     * task sleeps in xQueueReceive, so closing the gate is not enough on its
+     * own - deinit closes it and then posts the stop token, and the task
+     * recycles what the closed gate left queued before it publishes
+     * rt_task_stopped.
+     * The ack therefore covers the transport it owned (sent or recycled) and
+     * the queued ones, which is what "no dispatch call in flight" means.
+     * Deleting the task on its own cannot give that: it interrupts a send or
+     * recycle without waiting for the call to return. */
+    if (rt_task_handle) {
+        if (!ble_log_rt_stop_task()) {
+            ESP_LOGE(TAG, "Timed out stopping the BLE Log dispatch task");
+            BLE_LOG_ASSERT(false);
+        }
+        /* Acked and suspended: no dispatch call is in flight, and the task
+         * cannot race this delete with its own vTaskSuspend. */
+        vTaskDelete(rt_task_handle);
+        rt_task_handle = NULL;
     }
-#endif /* CONFIG_BLE_LOG_TS_ENABLED */
-
+#else
     if (rt_defer_timer) {
         esp_timer_stop_blocking(rt_defer_timer, portMAX_DELAY);
         esp_timer_delete(rt_defer_timer);
         rt_defer_timer = NULL;
     }
+#endif /* CONFIG_BLE_LOG_PRPH_COPY_FIFO */
+
+    if (rt_ts_timer) {
+        esp_timer_stop_blocking(rt_ts_timer, portMAX_DELAY);
+        /* Tail window: the callback has exited, so the shadow state is
+         * exclusively ours. Report losses since the last periodic window
+         * before the runtime queue and peripherals go away. The shadow was
+         * zeroed at init, so an early deinit reports exactly what was lost
+         * since then. */
+        ble_log_rt_report_loss();
+        esp_timer_delete(rt_ts_timer);
+        rt_ts_timer = NULL;
+    }
 
     if (rt_queue_handle) {
         ble_log_prph_trans_t *trans = NULL;
         while (xQueueReceive(rt_queue_handle, &trans, 0) == pdTRUE) {
-            trans->pos = 0;
             ble_log_lbm_recycle_trans(trans);
         }
         vQueueDelete(rt_queue_handle);
         rt_queue_handle = NULL;
     }
+
+#if CONFIG_BLE_LOG_TS_SYNC_TOGGLE_IO_ENABLED
+    ble_log_sync_deinit();
+#endif
 }
 
 bool ble_log_rt_drain(void)
@@ -268,6 +445,26 @@ bool ble_log_rt_drain(void)
     if (!ble_log_ref_count_try_acquire(&rt_ref_count, &rt_inited)) {
         return false;
     }
+#if CONFIG_BLE_LOG_PRPH_COPY_FIFO
+    if (!rt_task_handle || !rt_queue_handle) {
+        goto exit;
+    }
+
+    /* The dispatch task consumes the queue as long as work arrives; this
+     * waits until it has taken every submitted transport. Dequeued is not
+     * recycled, though: a transport the dispatcher already took is out of the
+     * queue but still in its hands. The teardown path therefore additionally
+     * waits for the dispatcher ack in ble_log_rt_deinit(); here the queue
+     * check only has to bound how long a flush waits. */
+    QueueHandle_t queue = rt_queue_handle;
+    while (uxQueueMessagesWaiting(queue)) {
+        /* One tick, not pdMS_TO_TICKS(1): at the default 100 Hz tick rate the
+         * latter converts to 0 and vTaskDelay(0) only yields, which spins a
+         * higher-priority caller instead of letting the dispatcher run. */
+        vTaskDelay(1);
+    }
+    drained = true;
+#else
     if (!rt_defer_timer || !rt_queue_handle) {
         goto exit;
     }
@@ -276,8 +473,11 @@ bool ble_log_rt_drain(void)
         goto exit;
     }
     QueueHandle_t queue = rt_queue_handle;
-    (void)ble_log_rt_dispatch(queue, uxQueueMessagesWaiting(queue));
+    while (uxQueueMessagesWaiting(queue)) {
+        ble_log_rt_dispatch(queue, uxQueueMessagesWaiting(queue));
+    }
     drained = true;
+#endif /* CONFIG_BLE_LOG_PRPH_COPY_FIFO */
 
 exit:
     BLE_LOG_REF_COUNT_RELEASE(&rt_ref_count);
@@ -287,13 +487,13 @@ exit:
 BLE_LOG_IRAM_ATTR void ble_log_rt_submit_trans(ble_log_prph_trans_t *trans)
 {
     if (!ble_log_ref_count_try_acquire(&rt_ref_count, &rt_inited)) {
+        /* No reference was taken, so this path must not release; it stays
+         * separate from the held-reference failures below. */
         ble_log_lbm_recycle_trans(trans);
         return;
     }
     if (!rt_queue_handle) {
-        BLE_LOG_REF_COUNT_RELEASE(&rt_ref_count);
-        ble_log_lbm_recycle_trans(trans);
-        return;
+        goto fail;
     }
 
     bool in_isr = BLE_LOG_IN_ISR();
@@ -301,24 +501,33 @@ BLE_LOG_IRAM_ATTR void ble_log_rt_submit_trans(ble_log_prph_trans_t *trans)
                         ? xQueueSendFromISR(rt_queue_handle, &trans, NULL)
                         : xQueueSend(rt_queue_handle, &trans, 0);
     if (queued != pdTRUE) {
-        BLE_LOG_REF_COUNT_RELEASE(&rt_ref_count);
-        ble_log_lbm_recycle_trans(trans);
-        return;
+        goto fail;
     }
 
-    /* An active timer keeps the deadline anchored to the first submission. */
+#if !CONFIG_BLE_LOG_PRPH_COPY_FIFO
     (void)esp_timer_start_once(rt_defer_timer, BLE_LOG_RT_DEFER_TIMEOUT_US);
+#endif
     BLE_LOG_REF_COUNT_RELEASE(&rt_ref_count);
+    return;
+
+fail:
+    BLE_LOG_REF_COUNT_RELEASE(&rt_ref_count);
+    ble_log_lbm_recycle_trans(trans);
 }
 
-#if CONFIG_BLE_LOG_TS_ENABLED
-bool ble_log_sync_enable(bool enable)
+bool ble_log_ts_sync_io_toggle_enable(bool enable)
 {
-    if (!BLE_LOG_ATOMIC_LOAD_ACQUIRE(rt_inited)) {
+    if (!ble_log_ref_count_try_acquire(&rt_ref_count, &rt_inited)) {
         return false;
     }
-    BLE_LOG_ATOMIC_STORE_RELEASE(rt_ts_enabled, enable);
-    ble_log_ts_reset(enable);
+
+    (void)enable;
+
+    BLE_LOG_REF_COUNT_RELEASE(&rt_ref_count);
     return true;
 }
-#endif /* CONFIG_BLE_LOG_TS_ENABLED */
+
+bool ble_log_sync_enable(bool enable)
+{
+    return ble_log_ts_sync_io_toggle_enable(enable);
+}

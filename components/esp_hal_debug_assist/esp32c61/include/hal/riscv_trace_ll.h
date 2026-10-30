@@ -32,12 +32,20 @@ static inline trace_dev_t *riscv_trace_ll_get_hw(int core)
  *--------------------------------------------------------------------------*/
 
 /** @brief Enable or disable the TRACE clock. */
+__attribute__((always_inline))
 static inline void riscv_trace_ll_enable_bus_clock(bool enable)
 {
     PCR.trace_conf.trace_clk_en = enable;
 }
 
+__attribute__((always_inline))
+static inline bool riscv_trace_ll_is_bus_clock_enabled(void)
+{
+    return PCR.trace_conf.trace_clk_en;
+}
+
 /** @brief Assert and release the reset of the encoder. */
+__attribute__((always_inline))
 static inline void riscv_trace_ll_reset_register(int core)
 {
     (void)core;
@@ -58,6 +66,11 @@ static inline void riscv_trace_ll_enable_module_clock(trace_dev_t *hw, bool enab
 static inline void riscv_trace_ll_set_mem_start_addr(trace_dev_t *hw, uint32_t addr)
 {
     hw->mem_start_addr.mem_start_addr = addr;
+}
+
+static inline uint32_t riscv_trace_ll_get_mem_start_addr(trace_dev_t *hw)
+{
+    return hw->mem_start_addr.mem_start_addr;
 }
 
 static inline void riscv_trace_ll_set_mem_end_addr(trace_dev_t *hw, uint32_t addr)

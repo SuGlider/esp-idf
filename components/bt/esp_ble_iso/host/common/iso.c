@@ -96,10 +96,8 @@ extern int r_ble_hci_trans_hs_iso_tx(const uint8_t *data, uint16_t length, void 
 extern void r_ble_ll_isoal_tx_comp_cb_set(void *cb);
 
 _IDF_ONLY
-int bt_le_iso_cb_register_safe(struct bt_le_iso_cb *cb)
+int bt_le_iso_cb_register(struct bt_le_iso_cb *cb)
 {
-    int err = 0;
-
     LOG_DBG("IsoCbReg");
 
     if (cb == NULL) {
@@ -107,24 +105,18 @@ int bt_le_iso_cb_register_safe(struct bt_le_iso_cb *cb)
         return -EINVAL;
     }
 
-    bt_le_host_lock();
-
     if (sys_slist_find(&iso_cbs, &cb->node, NULL)) {
         LOG_WRN("IsoCbRegExist");
-        err = -EEXIST;
-        goto end;
+        return -EEXIST;
     }
 
     sys_slist_append(&iso_cbs, &cb->node);
 
-end:
-    bt_le_host_unlock();
-
-    return err;
+    return 0;
 }
 
 _IDF_ONLY
-void bt_le_iso_cb_unregister_safe(struct bt_le_iso_cb *cb)
+void bt_le_iso_cb_unregister(struct bt_le_iso_cb *cb)
 {
     LOG_DBG("IsoCbUnreg");
 
@@ -133,9 +125,7 @@ void bt_le_iso_cb_unregister_safe(struct bt_le_iso_cb *cb)
         return;
     }
 
-    bt_le_host_lock();
     sys_slist_find_and_remove(&iso_cbs, &cb->node);
-    bt_le_host_unlock();
 }
 
 #if CONFIG_BT_ISO_UNICAST
@@ -443,6 +433,10 @@ struct iso_tx_sdu_node {
 };
 
 static BT_ISO_EXT_RAM_BSS_ATTR sys_slist_t iso_tx_sdu_list;
+#if !ISO_STD_FLOW_CTRL
+/* SDUs that waited in iso_tx_sdu_list for a controller buffer */
+static BT_ISO_EXT_RAM_BSS_ATTR uint32_t iso_tx_queued_cnt;
+#endif /* !ISO_STD_FLOW_CTRL */
 
 static int iso_tx_sdu_insert(struct bt_iso_chan *chan, const uint8_t *sdu, uint16_t sdu_len)
 {
@@ -588,12 +582,17 @@ static int iso_tx_now(struct bt_iso_chan *chan, const uint8_t *sdu,
      */
     if (sys_slist_is_empty(&iso_tx_sdu_list) == false ||
             r_ble_ll_iso_free_buf_num_get(chan->iso->handle) == 0) {
-        /* LOG_INF("IsoFlowCtrl!"); */
         err = iso_tx_sdu_insert(chan, pkt, 4 + data_total_len);
         if (err) {
             free(pkt);
+            return err;
         }
-        return err;
+
+        /* Report the first one and then every ISO_DROP_REPORT_STEP. */
+        if (iso_tx_queued_cnt++ % ISO_DROP_REPORT_STEP == 0) {
+            LOG_WRN("IsoFlowCtrl[queued=%u]", iso_tx_queued_cnt);
+        }
+        return 0;
     }
 #endif /* ISO_STD_FLOW_CTRL */
 
@@ -745,6 +744,7 @@ static void iso_tx_comp_cb(uint16_t conn_handle, void *info, size_t size)
      */
 
     BT_LE_ASSERT(size == sizeof(struct bt_iso_tx_cb_info));
+    BT_LE_ASSERT(((struct bt_iso_tx_cb_info *)info)->version == BT_ISO_TX_CB_INFO_VERSION);
 
     evt = bt_le_int_calloc(1, sizeof(*evt));
     if (evt == NULL) {
@@ -896,7 +896,10 @@ int bt_le_iso_init(void)
 
     iso_features_set();
 
-    err = bt_le_iso_cb_register_safe(&iso_cb);
+    bt_le_host_lock();
+    err = bt_le_iso_cb_register(&iso_cb);
+    bt_le_host_unlock();
+
     if (err) {
         return err;
     }
@@ -923,7 +926,9 @@ void bt_le_iso_deinit(void)
 
     iso_features_unset();
 
-    bt_le_iso_cb_unregister_safe(&iso_cb);
+    bt_le_host_lock();
+    bt_le_iso_cb_unregister(&iso_cb);
+    bt_le_host_unlock();
 
 #if CONFIG_BT_ISO_TX
     r_ble_ll_isoal_tx_comp_cb_set(NULL);

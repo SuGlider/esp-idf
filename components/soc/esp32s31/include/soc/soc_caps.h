@@ -25,6 +25,7 @@
 /*-------------------------- COMMON CAPS ---------------------------------------*/
 #define SOC_ADC_SUPPORTED               1
 #define SOC_ANA_CMPR_SUPPORTED          1
+// #define SOC_DAC_SUPPORTED               1  // TODO: [ESP32S31] IDF-14767
 #define SOC_DEDICATED_GPIO_SUPPORTED    1
 #define SOC_UART_SUPPORTED              1
 #define SOC_GDMA_SUPPORTED              1
@@ -81,6 +82,7 @@
 // #define SOC_APM_SUPPORTED               1      // TODO: [ESP32S31] IDF-14620
 #define SOC_PAU_SUPPORTED                  1
 #define SOC_PMU_SUPPORTED                  1
+#define SOC_PMU_PVT_SUPPORTED              1
 #define SOC_RTC_TIMER_SUPPORTED            1
 #define SOC_ULP_LP_UART_SUPPORTED       1
 #define SOC_LP_GPIO_MATRIX_SUPPORTED    1
@@ -131,6 +133,7 @@
 #define SOC_USB_OTG_PERIPH_NUM          (1U)
 #define SOC_USB_FSLS_PHY_NUM            (0U)
 #define SOC_USB_UTMI_PHY_NUM            (1U)
+#define SOC_USB_OTG_PSRAM_DMA_CAPABLE   (1)                 /*!< USB OTG Peripheral's internal DMA can access PSRAM */
 #define SOC_PM_SUPPORT_USB_WAKEUP        1
 
 #define SOC_PHY_SUPPORTED                1
@@ -161,9 +164,17 @@
 /*!< ADC power control is shared by PWDET, TempSensor */
 #define SOC_ADC_SHARED_POWER                    1
 
+/*-------------------------- DAC CAPS ----------------------------------------*/
+#define SOC_DAC_CHAN_NUM                        (2)
+#define SOC_DAC_HS_RESOLUTION                   (10)
+#define SOC_DAC_RESOLUTION                      (12)
+#define SOC_DAC_SUPPORT_BUFFER_CFG              1
+
 /*-------------------------- CACHE CAPS --------------------------------------*/
 #define SOC_CACHE_WRITEBACK_SUPPORTED           1
 #define SOC_CACHE_FREEZE_SUPPORTED              1
+#define SOC_CACHE_CNT_SUPPORTED                 1
+#define SOC_CACHE_CNT_UNITS_NUM                 4   //Number of cache profile counter units
 
 /*-------------------------- CPU CAPS ----------------------------------------*/
 #define SOC_CPU_CORES_NUM               (2U)
@@ -203,6 +214,7 @@
 #define SOC_AHB_GDMA_VERSION                2
 #define SOC_GDMA_SUPPORT_ETM                1
 #define SOC_GDMA_SUPPORT_SLEEP_RETENTION    1
+#define SOC_GDMA_SUPPORT_WEIGHTED_ARBITRATION   1
 
 /*-------------------------- MODEM CAPS --------------------------------------*/
 #define SOC_MODEM_SUPPORT_ETM               1
@@ -309,6 +321,7 @@
 #define SOC_PCNT_SUPPORT_STEP_NOTIFY          1
 
 /*-------------------------- MMU CAPS ----------------------------------------*/
+#define SOC_RISCV_SV32_SUPPORTED               (1) /*!< CPU supports RISC-V Sv32 address translation */
 #define SOC_MMU_PAGE_SIZE_CONFIGURABLE        (1)
 #define SOC_MMU_PERIPH_NUM                    (2U)
 #define SOC_MMU_LINEAR_ADDRESS_REGION_NUM     (2U)
@@ -343,14 +356,17 @@
 #define SOC_SPI_MEM_SUPPORT_IDLE_INTR                     (1)
 #define SOC_SPI_MEM_SUPPORT_SW_SUSPEND                    (1)
 #define SOC_SPI_MEM_SUPPORT_CHECK_SUS                     (1)
-#define SOC_SPI_MEM_SUPPORT_TIMING_TUNING         (1)
-#define SOC_MEMSPI_TIMING_TUNING_BY_DQS           (1)
+#define SOC_SPI_MEM_SUPPORT_TIMING_TUNING                 (1)
+#define SOC_MEMSPI_TIMING_TUNING_BY_DQS                   (1)
+#define SOC_MEMSPI_TIMING_TUNING_BY_FLASH_DELAY           (1)
 #define SOC_SPI_MEM_SUPPORT_CACHE_32BIT_ADDR_MAP          (1)
 #define SOC_SPI_MEM_SUPPORT_TSUS_TRES_SEPERATE_CTR        (1)
 
 #define SOC_PSRAM_HAS_DEDICATED_LDO               1
 #define SOC_MEMSPI_IS_INDEPENDENT                 1
 #define SOC_PSRAM_MEMSPI_IS_INDEPENDENT           1
+
+#define SOC_SPI_MEM_FLASH_SUPPORT_HPM                     (1) /*!< Support High Performance Mode */
 
 #define SOC_MEMSPI_ENCRYPTION_ALIGNMENT           16    /*!< 16-byte alignment restriction to mem addr and size if encryption is enabled */
 
@@ -401,6 +417,7 @@
 #define SOC_SHA_SUPPORT_SHA512_224      (1)
 #define SOC_SHA_SUPPORT_SHA512_256      (1)
 #define SOC_SHA_SUPPORT_SHA512_T        (1)
+#define SOC_SHA_SUPPORT_SM3             (1)
 
 /*--------------------------- MPI CAPS ---------------------------------------*/
 #define SOC_MPI_MEM_BLOCKS_NUM          (4)
@@ -419,6 +436,7 @@
 #define SOC_ECDSA_SUPPORT_HW_DETERMINISTIC_LOOP      (1)
 #define SOC_ECDSA_SUPPORT_CURVE_P384                 (1)
 #define SOC_ECDSA_SUPPORT_CURVE_SPECIFIC_KEY_PURPOSES (1)  /*!< Support individual key purposes for different ECDSA curves (P192, P256, P384) */
+#define SOC_ECDSA_SUPPORT_SOFTWARE_KEY               (1)  /*!< Support software supplied private key written into the ECDSA key registers */
 
 /*-------------------------- Digital Signature CAPS ----------------------------------------*/
 #define SOC_DS_SIGNATURE_MAX_BIT_LEN    (4096)
@@ -645,6 +663,7 @@
 
 /*---------------------------------- Bluetooth CAPS ----------------------------------*/
 #define SOC_BT_CLASSIC_SUPPORTED                    (1)     /*!< Support Bluetooth Classic hardware */
+#define SOC_ORCA_BREDR_CONTROLLER                   (1)     /*!< Support Espressif Orca BR/EDR controller */
 #define SOC_BLE_SUPPORTED                           (1)     /*!< Support Bluetooth Low Energy hardware */
 #define SOC_BLE_MESH_SUPPORTED                      (1)     /*!< Support BLE MESH */
 #define SOC_BLE_ISO_SUPPORTED                       (1)     /*!< Support BLE ISO */
@@ -659,6 +678,7 @@
 #define SOC_BLE_CTE_SUPPORTED                       (1)     /*!< Support Bluetooth LE Constant Tone Extension (CTE) */
 #define SOC_BLE_SUBRATE_SUPPORTED                   (1)     /*!< Support Bluetooth LE Connection Subrating */
 #define SOC_BLE_PERIODIC_ADV_WITH_RESPONSE          (1)     /*!< Support Bluetooth LE Periodic Advertising with Response (PAwR) */
+#define SOC_BT_H2C_ENC_KEY_CTRL_ENH_VSC_SUPPORTED   (1)     /*!< Support Bluetooth Classic encryption key size configuration through vendor-specific HCI command */
 
 /*-------------------------- I2S CAPS ----------------------------------------*/
 #define SOC_I2S_HW_VERSION_2                  (1)

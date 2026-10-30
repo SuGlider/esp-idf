@@ -47,7 +47,7 @@ Although an SMP system allows threads to switch cores, there are scenarios where
 SMP on an ESP Target
 ^^^^^^^^^^^^^^^^^^^^
 
-ESP targets such as ESP32, ESP32-S3, ESP32-P4 and ESP32-H4 are dual-core SMP SoCs. These targets have the following hardware features that make them SMP-capable:
+ESP targets with dual HP cores have the following hardware features that make them SMP-capable:
 
 - Two identical cores are known as Core 0 and Core 1. This means that the execution of a piece of code is identical regardless of which core it runs on.
 - Symmetric memory (with some small exceptions).
@@ -459,6 +459,14 @@ Misc
             On ESP32-S31, the PIE coprocessor is available **only on Core 1**. If a task executes a PIE instruction while running on Core 0, IDF FreeRTOS migrates the task to Core 1 and pins it there. This migration **overrides** any existing core affinity.
 
             Because of this migration, tasks must **not** use the PIE coprocessor within a critical section or ISR, as doing so will cause a runtime abort.
+
+    Accidental PIE use (for example from a deep call stack that pulls in a PIE helper) can pin a task that was not meant to run on the PIE core. Enable :menuitem:`CONFIG_FREERTOS_DEBUG_TASK_PIE_BLACKLIST` and call :cpp:func:`vTaskSetPieBlacklisted` on tasks that must not execute PIE. The flag is consulted only inside the coprocessor trap. PIE stays enabled while its owner keeps running, so instructions issued before that task is switched out do not trap. After the task is switched out, PIE is disabled and the next PIE instruction traps. A blacklisted task aborts on that trap even if it is still the coprocessor owner, instead of being silently pinned.
+
+    .. code-block:: c
+
+        #if CONFIG_FREERTOS_DEBUG_TASK_PIE_BLACKLIST
+            vTaskSetPieBlacklisted(my_task, pdTRUE);
+        #endif
 
 
 .. only:: SOC_CPU_HAS_HWLOOP

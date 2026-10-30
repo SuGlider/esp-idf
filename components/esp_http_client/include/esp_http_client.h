@@ -9,6 +9,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "sdkconfig.h"
+#include <stdint.h>
 #include "esp_err.h"
 #include "esp_key_config.h"
 #include <sys/socket.h>
@@ -34,7 +35,11 @@ struct esp_transport_item_t;
  * @brief   HTTP Client events id
  */
 typedef enum {
-    HTTP_EVENT_ERROR = 0,       /*!< This event occurs when there are any errors during execution */
+    HTTP_EVENT_ERROR = 0,       /*!< This event occurs when there are any errors during execution.
+                                     error holds the esp_err_t the failing call returns. data is the
+                                     transport's esp_tls_error_handle_t (NULL when no transport was
+                                     selected yet) with what the transport recorded: last_error, and
+                                     the TLS detail in esp_tls_error_code and esp_tls_flags */
     HTTP_EVENT_ON_CONNECTED,    /*!< Once the HTTP has been connected to the server, no data exchange has been performed */
     HTTP_EVENT_HEADERS_SENT,     /*!< After sending all the headers to the server */
     HTTP_EVENT_HEADER_SENT = HTTP_EVENT_HEADERS_SENT, /*!< This header has been kept for backward compatibility
@@ -54,11 +59,15 @@ typedef enum {
 typedef struct esp_http_client_event {
     esp_http_client_event_id_t event_id;    /*!< event_id, to know the cause of the event */
     esp_http_client_handle_t client;        /*!< esp_http_client_handle_t context */
-    void *data;                             /*!< data of the event */
+    void *data;                             /*!< data of the event, see the event_id description */
     int data_len;                           /*!< data length of data */
     void *user_data;                        /*!< user_data context, from esp_http_client_config_t user_data */
     char *header_key;                       /*!< For HTTP_EVENT_ON_HEADER event_id, it's store current http header key */
     char *header_value;                     /*!< For HTTP_EVENT_ON_HEADER event_id, it's store current http header value */
+    esp_err_t error;                        /*!< For HTTP_EVENT_ERROR: the esp_err_t the failing call returns: an ESP_ERR_HTTP_* code,
+                                                 ESP_FAIL where the call reports a plain failure (for example a failed POST body write),
+                                                 or the esp_err_t of a failed connect or prepare (ESP_ERR_INVALID_ARG,
+                                                 ESP_ERR_INVALID_STATE, ESP_ERR_NO_MEM). ESP_OK for every other event */
 } esp_http_client_event_t;
 
 /**
@@ -178,13 +187,13 @@ typedef enum {
  */
 typedef struct {
     const char                  *url;                /*!< HTTP URL, the information on the URL is most important, it overrides the other fields below, if any */
-    const char                  *host;               /*!< Domain or IP as string */
+    const char                  *host;               /*!< Domain or IP as string. Must not contain CR or LF */
     int                         port;                /*!< Port to connect, default depend on esp_http_client_transport_t (80 or 443) */
     const char                  *username;           /*!< Using for Http authentication */
     const char                  *password;           /*!< Using for Http authentication */
     esp_http_client_auth_type_t auth_type;           /*!< Http authentication type, see `esp_http_client_auth_type_t` */
-    const char                  *path;               /*!< HTTP Path, if not set, default is `/` */
-    const char                  *query;              /*!< HTTP query */
+    const char                  *path;               /*!< HTTP Path, if not set, default is `/`. Must not contain CR or LF */
+    const char                  *query;              /*!< HTTP query. Must not contain CR or LF */
     union {
         const char              *cert_pem;           /*!< SSL server certification, PEM format as string, if the client requires to verify server */
         const char              *cert_der;           /*!< SSL server certification, DER format as binary, if the client requires to verify server */
@@ -238,6 +247,14 @@ typedef struct {
 #if CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS
     const char                  **alpn_protos;       /*!< Application protocols required for HTTP2. If HTTP2/ALPN support is required, a list of protocols that should be negotiated. The format is length followed by protocol
                                                      name. For the most common cases the following is ok: const char **alpn_protos = { "h2", NULL }; - where 'h2' is the protocol name */
+    const int                   *ciphersuites_list;  /*!< Pointer to a zero-terminated array of IANA identifiers of TLS ciphersuites.
+                                                          The array is not copied. It must stay valid until the client is cleaned up.
+                                                          Please check the list validity by esp_tls_get_ciphersuites_list() API.
+                                                          NULL keeps the default ciphersuites. */
+    const uint16_t              *groups_list;        /*!< Pointer to a zero-terminated array of IANA identifiers of TLS supported groups,
+                                                          the named groups that are used for key exchange. The array is not copied. It must
+                                                          stay valid until the client is cleaned up. Please check the list validity by
+                                                          esp_tls_get_supported_groups_list() API. NULL keeps the default groups. */
 #endif
 #if CONFIG_ESP_TLS_USE_DS_PERIPHERAL
     void *ds_data;                          /*!< Pointer for digital signature peripheral context, see ESP-TLS Documentation for more details */
@@ -261,6 +278,7 @@ typedef struct {
 typedef enum {
     /* 2xx - Success */
     HttpStatus_Ok                = 200,
+    HttpStatus_NoContent         = 204,
     HttpStatus_PartialContent    = 206,
 
     /* 3xx - Redirection */
@@ -430,8 +448,12 @@ int esp_http_client_get_post_field(esp_http_client_handle_t client, char **data)
  * @param[in]  key     The header key
  * @param[in]  value   The header value
  *
+ * @note       A key or value that contains CR or LF is refused, because it would end
+ *             the header line early and let the rest be read as another header.
+ *
  * @return
  *  - ESP_OK
+ *  - ESP_ERR_INVALID_ARG: client or key is NULL, or the key or value contains CR or LF
  *  - ESP_FAIL
  */
 esp_err_t esp_http_client_set_header(esp_http_client_handle_t client, const char *key, const char *value);
@@ -738,9 +760,14 @@ int esp_http_client_chunk_write_end(esp_http_client_handle_t client, bool last_c
  *
  * @return
  *     - (0) if stream doesn't contain content-length header, or chunked encoding (checked by `esp_http_client_is_chunked_response`)
+ *     - (0) if the status is 204 No Content or 304 Not Modified and the request is not HEAD,
+ *       because no body follows. `esp_http_client_get_content_length()` still reports the
+ *       Content-Length header value.
  *     - (-1: ESP_FAIL) if any errors
  *     - (-ESP_ERR_HTTP_EAGAIN = -0x7007) if call is timed-out before any data was ready
- *     - Download data length defined by content-length header
+ *     - Download data length defined by content-length header. For a response to a HEAD
+ *       request, with any status, this is the length that the server declares for the
+ *       resource. No body follows, and `esp_http_client_read()` returns 0.
  */
 int64_t esp_http_client_fetch_headers(esp_http_client_handle_t client);
 
@@ -782,6 +809,12 @@ int esp_http_client_get_status_code(esp_http_client_handle_t client);
 /**
  * @brief      Get http response content length (from header Content-Length)
  *             the valid value if this function invoke after `esp_http_client_perform`
+ *
+ * @note       A response to a HEAD request, a 204 No Content and a 304 Not Modified
+ *             carry no body, although the server can still send a Content-Length
+ *             header. This function reports the declared value, but
+ *             `esp_http_client_read()` returns 0 at once for such a response. Check
+ *             the status code and the request method before you read that many bytes.
  *
  * @param[in]  client  The esp_http_client handle
  *
@@ -917,6 +950,10 @@ esp_err_t esp_http_client_add_auth(esp_http_client_handle_t client);
 
 /**
  * @brief      Checks if entire data in the response has been read without any error.
+ *
+ * @note       A response to a HEAD request, a 204 No Content and a 304 Not Modified
+ *             carry no body, so this function returns true for them after the
+ *             headers are read, even if the server sent a Content-Length header.
  *
  * @param[in]  client   The esp_http_client handle
  *

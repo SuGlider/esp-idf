@@ -3,16 +3,38 @@ idf_build_get_property(esp_tee_build ESP_TEE_BUILD)
 
 # On Linux, we only support a few features, hence this simple component registration
 if(${target} STREQUAL "linux")
-    idf_component_register(SRCS "esp_system.c"
-                        "esp_err.c"
-                        "esp_sys_event.c"
-                        "port/soc/linux/reset_reason.c"
-                        "port/soc/linux/system_internal.c"
-                        "port/esp_system_linux.c"
-                        "freertos_hooks.c"
-                        "startup.c"
+    set(linux_srcs "esp_system.c"
+                   "esp_err.c"
+                   "esp_sys_event.c"
+                   "port/soc/linux/reset_reason.c"
+                   "port/soc/linux/system_internal.c"
+                   "port/soc/linux/wdt_simulator.c"
+                   "port/esp_system_linux.c"
+                   "freertos_hooks.c"
+                   "startup.c")
+    set(linux_priv_requires spi_flash esp_timer esp_mspi)
+
+    if(CONFIG_ESP_TASK_WDT_EN)
+        list(APPEND linux_srcs "task_wdt/task_wdt.c"
+                               "task_wdt/task_wdt_impl_esp_timer.c")
+    endif()
+
+    idf_component_register(SRCS ${linux_srcs}
                         INCLUDE_DIRS "include"
-                        PRIV_REQUIRES spi_flash)
+                        PRIV_REQUIRES ${linux_priv_requires})
+
+    if(CONFIG_ESP_INT_WDT)
+        # Force-link wdt_simulator.o so its PRE_SCHEDULER registration is pulled
+        # in from the component archive (mirrors the non-Linux branch).
+        target_link_libraries(${COMPONENT_LIB} INTERFACE "-u esp_int_wdt_init")
+    endif()
+
+    if(CONFIG_ESP_TASK_WDT_INIT)
+        # Force-link task_wdt.o so its PRE_APP_MAIN registration (init_task_wdt)
+        # is pulled in from the component archive. This also transitively links
+        # the esp_timer backend that the task WDT relies on.
+        target_link_libraries(${COMPONENT_LIB} INTERFACE "-u esp_task_wdt_init")
+    endif()
 
     # Add custom ld file (used to place system init functions).
     # Mach-O (Apple) does not support linker scripts; section bounds are resolved
@@ -39,10 +61,10 @@ if(BOOTLOADER_BUILD OR esp_tee_build)
     if(esp_tee_build)
         list(APPEND include_dirs "port/include/private")
     endif()
-    # "_esp_error_check_failed()" requires spi_flash module
+    # "_esp_error_check_failed()" requires esp_mspi module
     # Bootloader relies on some Kconfig options defined in esp_system.
     idf_component_register(SRCS "${srcs}" INCLUDE_DIRS "${include_dirs}"
-                           REQUIRES spi_flash)
+                           PRIV_REQUIRES esp_mspi)
 else()
     list(APPEND srcs "crosscore_int.c"
             "esp_ipc.c"
@@ -96,16 +118,46 @@ else()
         list(APPEND srcs "debug_assist.c")
     endif()
 
+    set(priv_requires esp_mspi esp_timer esp_mm
+                      esp_hal_clock esp_hal_mspi esp_hal_wdt esp_hal_debug_assist
+                      esp_hal_uart esp_hal_dma esp_hal_security
+                      # [refactor-todo] requirements due to init code,
+                      # should be removable once using component init functions
+                      # link-time registration is used.
+                      bootloader_support)
+
+    if(NOT IDF_BUILD_V2)
+        # panic.c only calls into the ROM CDC console under CONFIG_ESP_CONSOLE_USB_CDC,
+        # but requirements are resolved before Kconfig here, so the dependency has to
+        # be unconditional. Under v2 it is added below based on the config value.
+        list(APPEND priv_requires esp_usb_cdc_rom_console)
+
+        # [refactor-todo] IDF-16183: esp_system no longer uses esp_pm, but the
+        # components that do can only link it if it is already in the build, so a
+        # central component has to keep it there. The dependency is unconditional
+        # because requirements are resolved before Kconfig here. Under v2 it is
+        # added below based on the config value.
+        list(APPEND priv_requires esp_pm)
+    endif()
+
     idf_component_register(SRCS "${srcs}"
                         INCLUDE_DIRS include
-                        PRIV_REQUIRES spi_flash esp_timer esp_mm
-                                      esp_hal_clock esp_hal_mspi esp_hal_wdt esp_hal_debug_assist
-                                      esp_hal_uart esp_hal_dma esp_hal_security
-                                      # [refactor-todo] requirements due to init code,
-                                      # should be removable once using component init functions
-                                      # link-time registration is used.
-                                      bootloader_support esp_pm esp_usb_cdc_rom_console
+                        PRIV_REQUIRES ${priv_requires}
                         LDFRAGMENTS "linker.lf" "app.lf")
+
+    if(IDF_BUILD_V2 AND CONFIG_ESP_CONSOLE_USB_CDC)
+        idf_component_include(esp_usb_cdc_rom_console)
+        target_link_libraries(${COMPONENT_LIB} PRIVATE idf::esp_usb_cdc_rom_console)
+    endif()
+
+    if(IDF_BUILD_V2 AND CONFIG_PM_ENABLE)
+        # [refactor-todo] IDF-16183: esp_system does not use esp_pm, so it is only
+        # included and not linked. Something has to keep esp_pm in the build so that
+        # its startup registration is linked, and the components that use power
+        # management only include it under their own narrower conditions.
+        idf_component_include(esp_pm)
+    endif()
+
     add_subdirectory(port)
 
     # After system initialization, `start_app` (and its other cores variant) is called.
@@ -150,6 +202,17 @@ else()
                         PROCESS "${CMAKE_CURRENT_BINARY_DIR}/ld/sections.ld")
 endif()
 
+if(CONFIG_ESP_SYSTEM_USE_EH_FRAME)
+    idf_build_set_property(COMPILE_OPTIONS "-fasynchronous-unwind-tables" APPEND)
+endif()
+
+if(CONFIG_ESP_SYSTEM_USE_FRAME_POINTER)
+    idf_build_set_property(COMPILE_OPTIONS "-fno-omit-frame-pointer" APPEND)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU")
+        idf_build_set_property(COMPILE_OPTIONS "-mno-omit-leaf-frame-pointer" APPEND)
+    endif()
+endif()
+
 if(CONFIG_IDF_ENV_FPGA OR CONFIG_ESP_BRINGUP_BYPASS_CPU_CLK_SETTING)
     # Forces the linker to include fpga stubs from this component
     target_link_libraries(${COMPONENT_LIB} INTERFACE "-u esp_common_include_fpga_overrides_clk")
@@ -183,14 +246,15 @@ endif()
 
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-u esp_system_include_startup_funcs")
 
+if(CONFIG_ESP_INT_WDT)
+    # Pull in the PRE_SCHEDULER registrations from int_wdt.c.
+    target_link_libraries(${COMPONENT_LIB} INTERFACE "-u esp_int_wdt_init")
+endif()
+
 # [refactor-todo] requirements due to init code, should be removable
 # once link-time registration of component init functions is used.
 if(NOT CONFIG_ESP_SYSTEM_PANIC_SILENT_REBOOT)
     idf_component_optional_requires(PRIVATE esp_app_format)
-endif()
-
-if(CONFIG_PM_ENABLE)
-    idf_component_optional_requires(PRIVATE pm)
 endif()
 
 if(NOT BOOTLOADER_BUILD)
@@ -210,6 +274,10 @@ endif()
 # For P4, since P4 REV2, the SRAM is contiguous
 if(CONFIG_ESP32P4_SELECTS_REV_LESS_V3)
     target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--enable-non-contiguous-regions")
+endif()
+
+if(CONFIG_ESP_SYSTEM_USE_EH_FRAME)
+    target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--eh-frame-hdr")
 endif()
 
 if(CONFIG_ESP_DEBUG_INCLUDE_OCD_STUB_BINS)
